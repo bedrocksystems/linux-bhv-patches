@@ -1,0 +1,4943 @@
+diff --git arch/arm64/Kbuild arch/arm64/Kbuild
+index d6465823b281..f1ea15a79b5a 100644
+--- arch/arm64/Kbuild
++++ arch/arm64/Kbuild
+@@ -3,4 +3,5 @@ obj-y			+= kernel/ mm/
+ obj-$(CONFIG_NET)	+= net/
+ obj-$(CONFIG_KVM)	+= kvm/
+ obj-$(CONFIG_XEN)	+= xen/
++obj-$(CONFIG_BHV_VAS)	+= bhv/
+ obj-$(CONFIG_CRYPTO)	+= crypto/
+diff --git arch/arm64/Kconfig arch/arm64/Kconfig
+index 5e5cf3af6351..1ed9422f27f4 100644
+--- arch/arm64/Kconfig
++++ arch/arm64/Kconfig
+@@ -1149,6 +1149,16 @@ config XEN
+ 	help
+ 	  Say Y if you want to run Linux in a Virtual Machine on Xen on ARM64.
+ 
++config BHV_VAS
++	def_bool y
++	bool "BVH guest support on ARM64"
++	depends on ARM64 && OF
++	help
++	  Say Y if you want to run Linux in a Virtual Machine on BHV on ARM64
++	  and benefit from Virtualization-assisted Security.
++
++source "kernel/bhv/Kconfig"
++
+ config FORCE_MAX_ZONEORDER
+ 	int
+ 	default "14" if (ARM64_64K_PAGES && TRANSPARENT_HUGEPAGE)
+diff --git arch/arm64/bhv/Makefile arch/arm64/bhv/Makefile
+new file mode 100644
+index 000000000000..d4ed00ade273
+--- /dev/null
++++ arch/arm64/bhv/Makefile
+@@ -0,0 +1,7 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# bhv-vas-y	+= $(addprefix ../../arm/xen/, enlighten.o grant-table.o p2m.o mm.o)
++obj-$(CONFIG_BHV_VAS)		:= start.o
++ifeq ($(CONFIG_JUMP_LABEL),y)
++obj-$(CONFIG_BHV_VAS)		+= patch_jump_label.o
++endif
++obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
+diff --git arch/arm64/bhv/patch_alternative.c arch/arm64/bhv/patch_alternative.c
+new file mode 100644
+index 000000000000..2478c350ae40
+--- /dev/null
++++ arch/arm64/bhv/patch_alternative.c
+@@ -0,0 +1,395 @@
++/******************************************************************************
++ * Sebastian Vogl <sebastian@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++#include <bhv/patch.h>
++#include <bhv/interface/patch.h>
++#include <asm/bhv/patch.h>
++#include <bhv/vault.h>
++#include <bhv/bhv.h>
++#include <asm/insn.h>
++#include <linux/mm.h>
++
++void bhv_alternatives_add_module_arch(struct alt_instr *begin,
++				      struct alt_instr *end, bool is_module)
++{
++	struct bhv_alternatives_mod_arch arch = { .is_module = is_module };
++	bhv_alternatives_add_module(begin, end, &arch);
++}
++
++static int __bhv_text bhv_aarch64_get_imm_shift_mask(
++	enum aarch64_insn_imm_type type, u32 *maskp, int *shiftp)
++{
++	u32 mask;
++	int shift;
++
++	switch (type) {
++	case AARCH64_INSN_IMM_26:
++		mask = BIT(26) - 1;
++		shift = 0;
++		break;
++	case AARCH64_INSN_IMM_19:
++		mask = BIT(19) - 1;
++		shift = 5;
++		break;
++	case AARCH64_INSN_IMM_16:
++		mask = BIT(16) - 1;
++		shift = 5;
++		break;
++	case AARCH64_INSN_IMM_14:
++		mask = BIT(14) - 1;
++		shift = 5;
++		break;
++	case AARCH64_INSN_IMM_12:
++		mask = BIT(12) - 1;
++		shift = 10;
++		break;
++	case AARCH64_INSN_IMM_9:
++		mask = BIT(9) - 1;
++		shift = 12;
++		break;
++	case AARCH64_INSN_IMM_7:
++		mask = BIT(7) - 1;
++		shift = 15;
++		break;
++	case AARCH64_INSN_IMM_6:
++	case AARCH64_INSN_IMM_S:
++		mask = BIT(6) - 1;
++		shift = 10;
++		break;
++	case AARCH64_INSN_IMM_R:
++		mask = BIT(6) - 1;
++		shift = 16;
++		break;
++	case AARCH64_INSN_IMM_N:
++		mask = 1;
++		shift = 22;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	*maskp = mask;
++	*shiftp = shift;
++
++	return 0;
++}
++
++#define ADR_IMM_HILOSPLIT 2
++#define ADR_IMM_SIZE SZ_2M
++#define ADR_IMM_LOMASK ((1 << ADR_IMM_HILOSPLIT) - 1)
++#define ADR_IMM_HIMASK ((ADR_IMM_SIZE >> ADR_IMM_HILOSPLIT) - 1)
++#define ADR_IMM_LOSHIFT 29
++#define ADR_IMM_HISHIFT 5
++
++static u64 __bhv_text
++bhv_aarch64_insn_decode_immediate(enum aarch64_insn_imm_type type, u32 insn)
++{
++	u32 immlo, immhi, mask;
++	int shift;
++
++	switch (type) {
++	case AARCH64_INSN_IMM_ADR:
++		shift = 0;
++		immlo = (insn >> ADR_IMM_LOSHIFT) & ADR_IMM_LOMASK;
++		immhi = (insn >> ADR_IMM_HISHIFT) & ADR_IMM_HIMASK;
++		insn = (immhi << ADR_IMM_HILOSPLIT) | immlo;
++		mask = ADR_IMM_SIZE - 1;
++		break;
++	default:
++		if (bhv_aarch64_get_imm_shift_mask(type, &mask, &shift) < 0) {
++			return 0;
++		}
++	}
++
++	return (insn >> shift) & mask;
++}
++
++static s32 __bhv_text bhv_aarch64_get_branch_offset(u32 insn)
++{
++	s32 imm;
++
++	if (aarch64_insn_is_b(insn) || aarch64_insn_is_bl(insn)) {
++		imm = bhv_aarch64_insn_decode_immediate(AARCH64_INSN_IMM_26,
++							insn);
++		return (imm << 6) >> 4;
++	}
++
++	if (aarch64_insn_is_cbz(insn) || aarch64_insn_is_cbnz(insn) ||
++	    aarch64_insn_is_bcond(insn)) {
++		imm = bhv_aarch64_insn_decode_immediate(AARCH64_INSN_IMM_19,
++							insn);
++		return (imm << 13) >> 11;
++	}
++
++	if (aarch64_insn_is_tbz(insn) || aarch64_insn_is_tbnz(insn)) {
++		imm = bhv_aarch64_insn_decode_immediate(AARCH64_INSN_IMM_14,
++							insn);
++		return (imm << 18) >> 16;
++	}
++
++	return 0;
++}
++
++static bool __bhv_text bhv_aarch64_insn_is_branch_imm(u32 insn)
++{
++	return (aarch64_insn_is_b(insn) || aarch64_insn_is_bl(insn) ||
++		aarch64_insn_is_tbz(insn) || aarch64_insn_is_tbnz(insn) ||
++		aarch64_insn_is_cbz(insn) || aarch64_insn_is_cbnz(insn) ||
++		aarch64_insn_is_bcond(insn));
++}
++
++static u32 __bhv_text bhv_aarch64_insn_encode_immediate(
++	enum aarch64_insn_imm_type type, u32 insn, u64 imm)
++{
++	u32 immlo, immhi, mask;
++	int shift;
++
++	if (insn == AARCH64_BREAK_FAULT)
++		return AARCH64_BREAK_FAULT;
++
++	switch (type) {
++	case AARCH64_INSN_IMM_ADR:
++		shift = 0;
++		immlo = (imm & ADR_IMM_LOMASK) << ADR_IMM_LOSHIFT;
++		imm >>= ADR_IMM_HILOSPLIT;
++		immhi = (imm & ADR_IMM_HIMASK) << ADR_IMM_HISHIFT;
++		imm = immlo | immhi;
++		mask = ((ADR_IMM_LOMASK << ADR_IMM_LOSHIFT) |
++			(ADR_IMM_HIMASK << ADR_IMM_HISHIFT));
++		break;
++	default:
++		if (bhv_aarch64_get_imm_shift_mask(type, &mask, &shift) < 0) {
++			return AARCH64_BREAK_FAULT;
++		}
++	}
++
++	/* Update the immediate field. */
++	insn &= ~(mask << shift);
++	insn |= (imm & mask) << shift;
++
++	return insn;
++}
++
++static u32 __bhv_text bhv_aarch64_set_branch_offset(u32 insn, s32 offset)
++{
++	if (aarch64_insn_is_b(insn) || aarch64_insn_is_bl(insn))
++		return aarch64_insn_encode_immediate(AARCH64_INSN_IMM_26, insn,
++						     offset >> 2);
++
++	if (aarch64_insn_is_cbz(insn) || aarch64_insn_is_cbnz(insn) ||
++	    aarch64_insn_is_bcond(insn))
++		return aarch64_insn_encode_immediate(AARCH64_INSN_IMM_19, insn,
++						     offset >> 2);
++
++	if (aarch64_insn_is_tbz(insn) || aarch64_insn_is_tbnz(insn))
++		return aarch64_insn_encode_immediate(AARCH64_INSN_IMM_14, insn,
++						     offset >> 2);
++
++	return 0;
++}
++
++static s32 __bhv_text bhv_aarch64_insn_adrp_get_offset(u32 insn)
++{
++	return bhv_aarch64_insn_decode_immediate(AARCH64_INSN_IMM_ADR, insn)
++	       << 12;
++}
++
++static u32 __bhv_text bhv_aarch64_insn_adrp_set_offset(u32 insn, s32 offset)
++{
++	return bhv_aarch64_insn_encode_immediate(AARCH64_INSN_IMM_ADR, insn,
++						 offset >> 12);
++}
++
++#define __ALT_PTR(a, f) ((void *)&(a)->f + (a)->f)
++#define ALT_ORIG_PTR(a) __ALT_PTR(a, orig_offset)
++#define ALT_REPL_PTR(a) __ALT_PTR(a, alt_offset)
++
++static bool __bhv_text branch_insn_requires_update(struct alt_instr *alt,
++						   unsigned long pc)
++{
++	unsigned long replptr = (unsigned long)ALT_REPL_PTR(alt);
++	return !(pc >= replptr && pc <= (replptr + alt->alt_len));
++}
++
++#define align_down(x, a) ((unsigned long)(x) & ~(((unsigned long)(a)) - 1))
++
++static u32 __bhv_text bhv_get_alt_insn(struct alt_instr *alt, __le32 *insnptr,
++				       __le32 *altinsnptr)
++{
++	u32 insn;
++
++	insn = le32_to_cpu(*altinsnptr);
++
++	if (bhv_aarch64_insn_is_branch_imm(insn)) {
++		s32 offset = bhv_aarch64_get_branch_offset(insn);
++		unsigned long target;
++
++		target = (unsigned long)altinsnptr + offset;
++
++		/*
++		 * If we're branching inside the alternate sequence,
++		 * do not rewrite the instruction, as it is already
++		 * correct. Otherwise, generate the new instruction.
++		 */
++		if (branch_insn_requires_update(alt, target)) {
++			offset = target - (unsigned long)insnptr;
++			insn = bhv_aarch64_set_branch_offset(insn, offset);
++		}
++	} else if (aarch64_insn_is_adrp(insn)) {
++		s32 orig_offset, new_offset;
++		unsigned long target;
++
++		/*
++		 * If we're replacing an adrp instruction, which uses PC-relative
++		 * immediate addressing, adjust the offset to reflect the new
++		 * PC. adrp operates on 4K aligned addresses.
++		 */
++		orig_offset = bhv_aarch64_insn_adrp_get_offset(insn);
++		target = align_down(altinsnptr, SZ_4K) + orig_offset;
++		new_offset = target - align_down(insnptr, SZ_4K);
++		insn = bhv_aarch64_insn_adrp_set_offset(insn, new_offset);
++	}
++
++	return insn;
++}
++
++static void __bhv_text bhv_alternatives_patch(struct alt_instr *alt,
++					      __le32 *origptr, __le32 *updptr,
++					      int nr_inst,
++					      bhv_patch_arg_t *bhv_arg)
++{
++	__le32 *replptr = 0;
++	int i;
++
++	replptr = ALT_REPL_PTR(alt);
++	for (i = 0; i < nr_inst; i++) {
++		u32 insn;
++
++		insn = bhv_get_alt_insn(alt, origptr + i, replptr + i);
++		insn = cpu_to_le32(insn);
++
++		bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++			virt_to_phys((void *)&updptr[i]);
++		memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &insn,
++		       sizeof(bhv_arg->bhv_patch_patch_arg.src_value));
++		bhv_arg->bhv_patch_patch_arg.size =
++			sizeof(bhv_arg->bhv_patch_patch_arg.src_value);
++
++		bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++				  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++	}
++}
++
++/*
++ * We provide our own, private D-cache cleaning function so that we don't
++ * accidentally call into the cache.S code, which is patched by us at
++ * runtime.
++ */
++static void __bhv_text clean_dcache_range_nopatch(u64 start, u64 end)
++{
++	u64 cur, d_size, ctr_el0;
++
++	ctr_el0 = read_sanitised_ftr_reg(SYS_CTR_EL0);
++	d_size = 4 << cpuid_feature_extract_unsigned_field(ctr_el0,
++							   CTR_DMINLINE_SHIFT);
++	cur = start & ~(d_size - 1);
++	do {
++		/*
++		 * We must clean+invalidate to the PoC in order to avoid
++		 * Cortex-A53 errata 826319, 827319, 824069 and 819472
++		 * (this corresponds to ARM64_WORKAROUND_CLEAN_CACHE)
++		 */
++		asm volatile("dc civac, %0" : : "r"(cur) : "memory");
++	} while (cur += d_size, cur < end);
++}
++
++int __bhv_text bhv_alternatives_apply_vault_arch(
++	struct bhv_alternatives_mod *mod, void *arch, bhv_patch_arg_t *bhv_arg)
++{
++	unsigned long *feature_mask = (unsigned long *)arch;
++
++	struct alt_instr *alt;
++	__le32 *origptr, *updptr;
++	alternative_cb_t alt_cb;
++
++	for (alt = mod->begin; alt < mod->end; alt++) {
++		int nr_inst;
++
++		if (!test_bit(alt->cpufeature, feature_mask))
++			continue;
++
++		/* Use ARM64_CB_PATCH as an unconditional patch */
++		if (alt->cpufeature < ARM64_CB_PATCH &&
++		    !cpus_have_cap(alt->cpufeature))
++			continue;
++
++		if (alt->cpufeature == ARM64_CB_PATCH) {
++			if (alt->alt_len != 0) {
++				return -EACCES;
++			}
++		} else {
++			if (alt->alt_len != alt->orig_len) {
++				return -EACCES;
++			}
++		}
++
++		origptr = ALT_ORIG_PTR(alt);
++		updptr = mod->arch.is_module ? origptr : lm_alias(origptr);
++		nr_inst = alt->orig_len / AARCH64_INSN_SIZE;
++
++		if (alt->cpufeature < ARM64_CB_PATCH) {
++			bhv_alternatives_patch(alt, origptr, updptr, nr_inst,
++					       bhv_arg);
++		} else {
++			alt_cb = ALT_REPL_PTR(alt);
++			alt_cb(alt, origptr, updptr, nr_inst, bhv_arg);
++		}
++
++		if (!mod->arch.is_module) {
++			clean_dcache_range_nopatch((u64)origptr,
++						   (u64)(origptr + nr_inst));
++		}
++	}
++
++	return 0;
++}
++
++struct bhv_alternatives_mod *__bhv_text
++bhv_alternatives_get_static_mods_vault(uint32_t *nr_mods)
++{
++	static struct bhv_alternatives_mod kernel = {
++		.begin = (struct alt_instr *)__alt_instructions,
++		.end = (struct alt_instr *)__alt_instructions_end,
++		.delete_policy = BHV_ALTERNATIVES_DELETE_AFTER_INIT,
++		.allocated = false,
++		.arch = { .is_module = false },
++		.next = { .next = NULL, .prev = NULL }
++	};
++
++	*nr_mods = 1;
++	return &kernel;
++}
+diff --git arch/arm64/bhv/patch_jump_label.c arch/arm64/bhv/patch_jump_label.c
+new file mode 100644
+index 000000000000..acd2f49d352e
+--- /dev/null
++++ arch/arm64/bhv/patch_jump_label.c
+@@ -0,0 +1,100 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#include <linux/jump_label.h>
++#include <linux/string.h>
++#include <asm/insn.h>
++#include <asm/debug-monitors.h>
++#include <asm/bhv/patch.h>
++
++static __always_inline bool bhv_branch_imm_common(unsigned long pc,
++						  unsigned long addr,
++						  long range, long *offset)
++{
++	if ((pc & 0x3) || (addr & 0x3)) {
++		return false;
++	}
++
++	*offset = ((long)addr - (long)pc);
++
++	if (*offset < -range || *offset >= range) {
++		return false;
++	}
++
++	return true;
++}
++
++u32 __always_inline bhv_aarch64_insn_encode_immediate(u32 insn, u64 imm)
++{
++	u32 mask;
++	int shift;
++
++	if (insn == AARCH64_BREAK_FAULT)
++		return AARCH64_BREAK_FAULT;
++
++	mask = BIT(26) - 1;
++	shift = 0;
++
++	/* Update the immediate field. */
++	insn &= ~(mask << shift);
++	insn |= (imm & mask) << shift;
++
++	return insn;
++}
++
++bool __bhv_text bhv_jump_label_validate_opcode(struct jump_entry *entry,
++					       enum jump_label_type type,
++					       const void *expected_opcode,
++					       size_t size)
++{
++	u32 jmp_insn, nop_insn;
++	long offset;
++	void *addr = (void *)jump_entry_code(entry);
++
++	if (!bhv_branch_imm_common((long)addr, jump_entry_target(entry),
++				   SZ_128M, &offset))
++		return false;
++	jmp_insn = aarch64_insn_get_b_value();
++	jmp_insn = bhv_aarch64_insn_encode_immediate(jmp_insn, offset >> 2);
++
++	nop_insn = aarch64_insn_get_hint_value() | AARCH64_INSN_HINT_NOP;
++
++	if (type == JUMP_LABEL_JMP) {
++		if (memcmp(addr, &nop_insn, AARCH64_INSN_SIZE))
++			return false;
++		if (memcmp(expected_opcode, &jmp_insn, AARCH64_INSN_SIZE))
++			return false;
++	} else {
++		if (memcmp(addr, &jmp_insn, AARCH64_INSN_SIZE))
++			return false;
++		if (memcmp(expected_opcode, &nop_insn, AARCH64_INSN_SIZE))
++			return false;
++	}
++
++	return true;
++}
+diff --git arch/arm64/bhv/start.c arch/arm64/bhv/start.c
+new file mode 100644
+index 000000000000..d2026af2c67f
+--- /dev/null
++++ arch/arm64/bhv/start.c
+@@ -0,0 +1,34 @@
++/*
++ * Copyright (C) 2022, BedRock Systems, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
++ * NON INFRINGEMENT.  See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++#include <asm/io.h>
++#include <asm/syscall.h>
++
++#include <bhv/interface/common.h>
++#include <bhv/integrity.h>
++#include <bhv/bhv.h>
++
++int bhv_start_arch(void)
++{
++	// NOTE: nothing to do here as the system call table is
++	//       in the ro_data section and the vector table is
++	//       in the text section.
++	return 0;
++}
+diff --git arch/arm64/include/asm/alternative.h arch/arm64/include/asm/alternative.h
+index 3cb3c4ab3ea5..632546cb6526 100644
+--- arch/arm64/include/asm/alternative.h
++++ arch/arm64/include/asm/alternative.h
+@@ -14,6 +14,8 @@
+ #include <linux/stddef.h>
+ #include <linux/stringify.h>
+ 
++#include <bhv/interface/patch.h>
++
+ struct alt_instr {
+ 	s32 orig_offset;	/* offset to original instruction */
+ 	s32 alt_offset;		/* offset to replacement instruction */
+@@ -22,8 +24,14 @@ struct alt_instr {
+ 	u8  alt_len;		/* size of new instruction(s), <= orig_len */
+ };
+ 
++#ifdef CONFIG_BHV_VAS
++typedef void (*alternative_cb_t)(struct alt_instr *alt, __le32 *origptr,
++				 __le32 *updptr, int nr_inst,
++				 bhv_patch_arg_t *bhv_arg);
++#else /* !CONFIG_BHV_VAS */
+ typedef void (*alternative_cb_t)(struct alt_instr *alt,
+ 				 __le32 *origptr, __le32 *updptr, int nr_inst);
++#endif /* CONFIG_BHV_VAS */
+ 
+ void __init apply_boot_alternatives(void);
+ void __init apply_alternatives_all(void);
+diff --git arch/arm64/include/asm/bhv/hypercall.h arch/arm64/include/asm/bhv/hypercall.h
+new file mode 100644
+index 000000000000..a3177fda7f1d
+--- /dev/null
++++ arch/arm64/include/asm/bhv/hypercall.h
+@@ -0,0 +1,52 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __ASM_BHV_HYPERCALL_H__
++#define __ASM_BHV_HYPERCALL_H__
++
++#define BHV_IMM 0x539
++
++static __always_inline unsigned long BHV_HYPERCALL(uint16_t target,
++						   uint32_t backend,
++						   uint32_t op, uint32_t ver,
++						   uint64_t arg)
++{
++	// https://gcc.gnu.org/onlinedocs/gcc/Local-Register-Variables.html
++	register unsigned long x0 __asm__("x0") = target;
++	register unsigned long x1 __asm__("x1") = backend;
++	register unsigned long x2 __asm__("x2") = op;
++	register unsigned long x3 __asm__("x3") = ver;
++	register unsigned long x4 __asm__("x4") = arg;
++	__asm__ __volatile__("hvc " __stringify(BHV_IMM) "\n\t"
++			     : "+r"(x0)
++			     : "r"(x1), "r"(x2), "r"(x3), "r"(x4)
++			     :);
++	return x0;
++}
++
++#endif /* __ASM_BHV_HYPERCALL_H__ */
+diff --git arch/arm64/include/asm/bhv/patch.h arch/arm64/include/asm/bhv/patch.h
+new file mode 100644
+index 000000000000..e20171b32ad0
+--- /dev/null
++++ arch/arm64/include/asm/bhv/patch.h
+@@ -0,0 +1,56 @@
++/*
++ * Copyright (C) 2022, BedRock Systems, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
++ * NON INFRINGEMENT.  See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++#ifndef __ASM_BHV_PATCH_H__
++#define __ASM_BHV_PATCH_H__
++
++struct bhv_alternatives_mod;
++struct bhv_alternatives_mod_arch {
++	bool is_module;
++};
++
++#ifdef CONFIG_BHV_VAS
++#include <bhv/bhv.h>
++
++#ifdef CONFIG_JUMP_LABEL
++#include <linux/jump_label.h>
++
++bool __bhv_text bhv_jump_label_validate_opcode(struct jump_entry *entry,
++					       enum jump_label_type type,
++					       const void *expected_opcode,
++					       size_t len);
++#endif /* CONFIG_JUMP_LABEL */
++
++int __bhv_text bhv_alternatives_apply_vault_arch(
++	struct bhv_alternatives_mod *mod, void *arch, bhv_patch_arg_t *bhv_arg);
++void __bhv_text bhv_alternatives_add_module_arch(struct alt_instr *begin,
++						 struct alt_instr *end,
++						 bool is_module);
++struct bhv_alternatives_mod *__bhv_text
++bhv_alternatives_get_static_mods_vault(uint32_t *nr_mods);
++
++#else /* !CONFIG_BHV_VAS */
++static inline void bhv_alternatives_add_module_arch(struct alt_instr *,
++						    struct alt_instr *, bool)
++{
++}
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __ASM_BHV_PATCH_H__ */
+diff --git arch/arm64/kernel/alternative.c arch/arm64/kernel/alternative.c
+index 73039949b5ce..cf6630521469 100644
+--- arch/arm64/kernel/alternative.c
++++ arch/arm64/kernel/alternative.c
+@@ -17,6 +17,8 @@
+ #include <asm/sections.h>
+ #include <linux/stop_machine.h>
+ 
++#include <bhv/patch.h>
++
+ #define __ALT_PTR(a,f)		((void *)&(a)->f + (a)->f)
+ #define ALT_ORIG_PTR(a)		__ALT_PTR(a, orig_offset)
+ #define ALT_REPL_PTR(a)		__ALT_PTR(a, alt_offset)
+@@ -38,6 +40,7 @@ bool alternative_is_applied(u16 cpufeature)
+ 	return test_bit(cpufeature, applied_alternatives);
+ }
+ 
++#ifndef CONFIG_BHV_VAS
+ /*
+  * Check if the target PC is within an alternative block.
+  */
+@@ -131,12 +134,16 @@ static void clean_dcache_range_nopatch(u64 start, u64 end)
+ 		asm volatile("dc civac, %0" : : "r" (cur) : "memory");
+ 	} while (cur += d_size, cur < end);
+ }
++#endif
+ 
+-static void __apply_alternatives(void *alt_region,  bool is_module,
++static void __apply_alternatives(void *alt_region, bool is_module,
+ 				 unsigned long *feature_mask)
+ {
+-	struct alt_instr *alt;
+ 	struct alt_region *region = alt_region;
++#ifdef CONFIG_BHV_VAS
++	bhv_alternatives_apply(region->begin, region->end, feature_mask);
++#else
++	struct alt_instr *alt;
+ 	__le32 *origptr, *updptr;
+ 	alternative_cb_t alt_cb;
+ 
+@@ -175,6 +182,7 @@ static void __apply_alternatives(void *alt_region,  bool is_module,
+ 		}
+ 	}
+ 
++#endif /* CONFIG_BHV_VAS */
+ 	/*
+ 	 * The core module code takes care of cache maintenance in
+ 	 * flush_module_icache().
+@@ -254,10 +262,12 @@ void apply_alternatives_module(void *start, size_t length)
+ 		.begin	= start,
+ 		.end	= start + length,
+ 	};
++
+ 	DECLARE_BITMAP(all_capabilities, ARM64_NPATCHABLE);
+ 
+ 	bitmap_fill(all_capabilities, ARM64_NPATCHABLE);
+ 
++	bhv_alternatives_add_module_arch(region.begin, region.end, true);
+ 	__apply_alternatives(&region, true, &all_capabilities[0]);
+ }
+ #endif
+diff --git arch/arm64/kernel/jump_label.c arch/arm64/kernel/jump_label.c
+index 9a8a0ae1e75f..6f5017ed7a44 100644
+--- arch/arm64/kernel/jump_label.c
++++ arch/arm64/kernel/jump_label.c
+@@ -9,10 +9,13 @@
+ #include <linux/jump_label.h>
+ #include <asm/insn.h>
+ 
++#include <bhv/patch.h>
++#include <bhv/bhv.h>
++
+ void arch_jump_label_transform(struct jump_entry *entry,
+ 			       enum jump_label_type type)
+ {
+-	void *addr = (void *)jump_entry_code(entry);
++	void __maybe_unused *addr = (void *)jump_entry_code(entry);
+ 	u32 insn;
+ 
+ 	if (type == JUMP_LABEL_JMP) {
+@@ -23,6 +26,13 @@ void arch_jump_label_transform(struct jump_entry *entry,
+ 		insn = aarch64_insn_gen_nop();
+ 	}
+ 
++#ifdef CONFIG_BHV_VAS
++	if (bhv_initialized) {
++		bhv_patch_jump_label(entry, &insn, AARCH64_INSN_SIZE);
++		return;
++	}
++#endif
++
+ 	aarch64_insn_patch_text_nosync(addr, insn);
+ }
+ 
+diff --git arch/arm64/kernel/module.c arch/arm64/kernel/module.c
+index 2a1ad95d9b2c..bb132fbf0ef2 100644
+--- arch/arm64/kernel/module.c
++++ arch/arm64/kernel/module.c
+@@ -19,6 +19,7 @@
+ #include <asm/alternative.h>
+ #include <asm/insn.h>
+ #include <asm/sections.h>
++#include <asm/bhv/patch.h>
+ 
+ void *module_alloc(unsigned long size)
+ {
+diff --git arch/arm64/kernel/proton-pack.c arch/arm64/kernel/proton-pack.c
+index f6e4e3737405..2d149b60d406 100644
+--- arch/arm64/kernel/proton-pack.c
++++ arch/arm64/kernel/proton-pack.c
+@@ -27,6 +27,12 @@
+ #include <asm/spectre.h>
+ #include <asm/traps.h>
+ 
++#include <bhv/bhv.h>
++#include <bhv/patch.h>
++#include <bhv/interface/hypercall.h>
++#include <bhv/interface/patch.h>
++#include <asm/bhv/patch.h>
++
+ /*
+  * We try to ensure that the mitigation state can never change as the result of
+  * onlining a late CPU.
+@@ -551,10 +557,21 @@ static enum mitigation_state spectre_v4_enable_hw_mitigation(void)
+  * Patch a branch over the Spectre-v4 mitigation code with a NOP so that
+  * we fallthrough and check whether firmware needs to be called on this CPU.
+  */
++#ifdef CONFIG_BHV_VAS
++void __init spectre_v4_patch_fw_mitigation_enable(struct alt_instr *alt,
++						  __le32 *origptr,
++						  __le32 *updptr, int nr_inst,
++						  bhv_patch_arg_t *bhv_arg)
++#else /* !CONFIG_BHV_VAS */
+ void __init spectre_v4_patch_fw_mitigation_enable(struct alt_instr *alt,
+ 						  __le32 *origptr,
+ 						  __le32 *updptr, int nr_inst)
++#endif /* CONFIG_BHV_VAS */
+ {
++#ifdef CONFIG_BHV_VAS
++	u32 insn;
++#endif /* CONFIG_BHV_VAS */
++
+ 	BUG_ON(nr_inst != 1); /* Branch -> NOP */
+ 
+ 	if (spectre_v4_mitigations_off())
+@@ -563,17 +580,37 @@ void __init spectre_v4_patch_fw_mitigation_enable(struct alt_instr *alt,
+ 	if (cpus_have_final_cap(ARM64_SSBS))
+ 		return;
+ 
+-	if (spectre_v4_mitigations_dynamic())
++	if (spectre_v4_mitigations_dynamic()) {
++#ifdef CONFIG_BHV_VAS
++		insn = cpu_to_le32(aarch64_insn_gen_nop());
++		bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++			virt_to_phys((void *)updptr);
++		memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &insn,
++		       sizeof(bhv_arg->bhv_patch_patch_arg.src_value));
++		bhv_arg->bhv_patch_patch_arg.size =
++			sizeof(bhv_arg->bhv_patch_patch_arg.src_value);
++		bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++				  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++#else /* !CONFIG_BHV_VAS */
+ 		*updptr = cpu_to_le32(aarch64_insn_gen_nop());
++#endif /* CONFIG_BHV_VAS */
++	}
+ }
+ 
+ /*
+  * Patch a NOP in the Spectre-v4 mitigation code with an SMC/HVC instruction
+  * to call into firmware to adjust the mitigation state.
+  */
++#ifdef CONFIG_BHV_VAS
++void __init spectre_v4_patch_fw_mitigation_conduit(struct alt_instr *alt,
++						   __le32 *origptr,
++						   __le32 *updptr, int nr_inst,
++						   bhv_patch_arg_t *bhv_arg)
++#else /* !CONFIG_BHV_VAS */
+ void __init spectre_v4_patch_fw_mitigation_conduit(struct alt_instr *alt,
+ 						   __le32 *origptr,
+ 						   __le32 *updptr, int nr_inst)
++#endif /* CONFIG_BHV_VAS */
+ {
+ 	u32 insn;
+ 
+@@ -590,7 +627,19 @@ void __init spectre_v4_patch_fw_mitigation_conduit(struct alt_instr *alt,
+ 		return;
+ 	}
+ 
++#ifdef CONFIG_BHV_VAS
++	insn = cpu_to_le32(insn);
++	bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++		virt_to_phys((void *)updptr);
++	memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &insn,
++	       sizeof(bhv_arg->bhv_patch_patch_arg.src_value));
++	bhv_arg->bhv_patch_patch_arg.size =
++		sizeof(bhv_arg->bhv_patch_patch_arg.src_value);
++	bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++			  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++#else /* !CONFIG_BHV_VAS */
+ 	*updptr = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ }
+ 
+ static enum mitigation_state spectre_v4_enable_fw_mitigation(void)
+diff --git arch/arm64/kernel/setup.c arch/arm64/kernel/setup.c
+index eb4b24652c10..849c9741fd9e 100644
+--- arch/arm64/kernel/setup.c
++++ arch/arm64/kernel/setup.c
+@@ -51,6 +51,8 @@
+ #include <asm/xen/hypervisor.h>
+ #include <asm/mmu_context.h>
+ 
++#include <bhv/start.h>
++
+ static int num_standard_resources;
+ static struct resource *standard_resources;
+ 
+@@ -323,6 +325,7 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
+ 	cpu_uninstall_idmap();
+ 
+ 	xen_early_init();
++	bhv_init_platform();
+ 	efi_init();
+ 
+ 	if (!efi_enabled(EFI_BOOT) && ((u64)_text % MIN_KIMG_ALIGN) != 0)
+diff --git arch/arm64/kernel/vmlinux.lds.S arch/arm64/kernel/vmlinux.lds.S
+index 30c102978942..b7a1d8115090 100644
+--- arch/arm64/kernel/vmlinux.lds.S
++++ arch/arm64/kernel/vmlinux.lds.S
+@@ -135,6 +135,7 @@ SECTIONS
+ 			IDMAP_TEXT
+ 			HIBERNATE_TEXT
+ 			TRAMP_TEXT
++			BHV_TEXT
+ 			*(.fixup)
+ 			*(.gnu.warning)
+ 		. = ALIGN(16);
+@@ -250,6 +251,17 @@ SECTIONS
+ 		__mmuoff_data_end = .;
+ 	}
+ 
++#ifdef CONFIG_BHV_VAS
++	. = ALIGN(PAGE_SIZE);
++	.bhv.data : {
++		__bhv_data_start = .;
++		. += PAGE_SIZE;
++		*(.bhv.data)
++		. = ALIGN(PAGE_SIZE);
++		__bhv_data_end = .;
++	}
++#endif
++
+ 	PECOFF_EDATA_PADDING
+ 	__pecoff_data_rawsize = ABSOLUTE(. - __initdata_begin);
+ 	_edata = .;
+diff --git arch/x86/Kbuild arch/x86/Kbuild
+index 30dec019756b..3235bbc86ff8 100644
+--- arch/x86/Kbuild
++++ arch/x86/Kbuild
+@@ -13,6 +13,9 @@ obj-$(CONFIG_PVH) += platform/pvh/
+ # Hyper-V paravirtualization support
+ obj-$(subst m,y,$(CONFIG_HYPERV)) += hyperv/
+ 
++# BHV VAS support
++obj-$(CONFIG_BHV_VAS)	+= bhv/
++
+ obj-y += realmode/
+ obj-y += kernel/
+ obj-y += mm/
+diff --git arch/x86/Kconfig arch/x86/Kconfig
+index c3d9f56c9018..325e58f61ae8 100644
+--- arch/x86/Kconfig
++++ arch/x86/Kconfig
+@@ -864,6 +864,16 @@ config ACRN_GUEST
+ 	  IOT with small footprint and real-time features. More details can be
+ 	  found in https://projectacrn.org/.
+ 
++config BHV_VAS
++	def_bool y
++	bool "BVH guest support on x86_64"
++	depends on X86_64
++	help
++	  Say Y if you want to run Linux in a Virtual Machine on BHV on x86_64
++	  and benefit from Virtualization-assisted Security.
++
++source "kernel/bhv/Kconfig"
++
+ endif #HYPERVISOR_GUEST
+ 
+ source "arch/x86/Kconfig.cpu"
+diff --git arch/x86/bhv/Makefile arch/x86/bhv/Makefile
+new file mode 100644
+index 000000000000..543bd657f3c2
+--- /dev/null
++++ arch/x86/bhv/Makefile
+@@ -0,0 +1,7 @@
++# SPDX-License-Identifier: GPL-2.0-only
++obj-$(CONFIG_BHV_VAS)		:= start.o
++obj-$(CONFIG_BHV_VAS)		+= integrity.o
++ifeq ($(CONFIG_JUMP_LABEL),y)
++obj-$(CONFIG_BHV_VAS)		+= patch_jump_label.o
++endif
++obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
+diff --git arch/x86/bhv/integrity.c arch/x86/bhv/integrity.c
+new file mode 100644
+index 000000000000..2d3fed14e297
+--- /dev/null
++++ arch/x86/bhv/integrity.c
+@@ -0,0 +1,135 @@
++/*
++ * Copyright (C) 2022, BedRock Systems, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
++ * NON INFRINGEMENT.  See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++#include <asm/io.h>
++#include <asm/syscall.h>
++#include <asm/bhv/integrity.h>
++
++#include <bhv/interface/common.h>
++#include <bhv/integrity.h>
++#include <bhv/bhv.h>
++
++struct {
++	bool valid;
++	uint64_t addr;
++	uint64_t size;
++} typedef table_data_t;
++
++static table_data_t table_data __ro_after_init;
++
++/* XXX: Pull this out into common code. */
++static void bhv_release_arg_list(struct list_head *head)
++{
++	bhv_mem_region_node_t *entry, *tmp;
++	list_for_each_entry_safe (entry, tmp, head, list)
++		kmem_cache_free(bhv_mem_region_cache, entry);
++}
++
++/* XXX: Pull this out into common code. */
++static int bhv_link_node_op_create(struct list_head *head, uint64_t addr,
++				   uint64_t size, uint32_t type, uint64_t flags)
++{
++	bhv_mem_region_node_t *n =
++		kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
++	if (n == NULL) {
++		bhv_fail("BHV: failed to allocate mem region");
++		return -ENOMEM;
++	}
++
++	n->region.bhv_mem_region_create.start_addr = addr;
++	n->region.bhv_mem_region_create.size = size;
++	n->region.bhv_mem_region_create.type = type;
++	n->region.bhv_mem_region_create.flags = flags;
++	n->region.bhv_mem_region_create.next = BHV_INVALID_PHYS_ADDR;
++
++	/*
++        ¦* XXX: Consider moving the field 'next' out of the union in
++        ¦* bhv_mem_region_t. This will allow to move the remaining
++        ¦* list-maintenance operations into the calling function.
++        ¦*/
++
++	if (!list_empty(head)) {
++		bhv_mem_region_node_t *tail =
++			list_last_entry(head, bhv_mem_region_node_t, list);
++		tail->region.bhv_mem_region_create.next =
++			virt_to_phys(&n->region);
++	}
++
++	list_add_tail(&n->list, head);
++
++	return 0;
++}
++
++static int bhv_alloc_node_idt_region(struct list_head *head)
++{
++	uint64_t addr = virt_to_phys((void *)table_data.addr);
++	uint64_t size = table_data.size;
++
++	return bhv_link_node_op_create(head, addr, size,
++				       BHV_MEM_TYPE_DATA_READ_ONLY,
++				       BHV_MEM_FLAGS_NONE);
++}
++
++int bhv_start_integrity_arch(void)
++{
++	int rc = 0;
++	bhv_mem_region_node_t *n = NULL;
++
++	LIST_HEAD(head);
++
++	// NOTE: the x86 system call table does not need explict protection
++	//       it is contained in the ro_data section.
++
++	if (!table_data.valid)
++		return 0;
++
++	rc = bhv_alloc_node_idt_region(&head);
++	if (rc)
++		goto out;
++
++	n = list_first_entry_or_null(&head, bhv_mem_region_node_t, list);
++	if (n == NULL) {
++		rc = -ENOENT;
++		goto out;
++	}
++
++	rc = bhv_create_kern_phys_mem_region_hyp(0, &n->region);
++	if (rc) {
++		bhv_fail("BHV: Cannot create phys mem regions");
++		goto out;
++	}
++
++out:
++	bhv_release_arg_list(&head);
++	return rc;
++}
++
++void __init bhv_register_idt(uint64_t addr, int numpages)
++{
++	table_data.addr = addr;
++	table_data.size = numpages * PAGE_SIZE;
++	table_data.valid = true;
++}
++
++void __init bhv_integrity_arch_init(void)
++{
++	memset(&table_data, 0, sizeof(table_data));
++}
++
+diff --git arch/x86/bhv/patch_alternative.c arch/x86/bhv/patch_alternative.c
+new file mode 100644
+index 000000000000..35e607f3404b
+--- /dev/null
++++ arch/x86/bhv/patch_alternative.c
+@@ -0,0 +1,401 @@
++/******************************************************************************
++ * Sebastian Vogl <sebastian@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++#include <bhv/bhv.h>
++#include <bhv/vault.h>
++
++#include <bhv/patch.h>
++#include <bhv/interface/patch.h>
++#include <asm/bhv/patch.h>
++
++#include <asm/sections.h>
++
++void bhv_alternatives_add_module_arch(struct alt_instr *begin,
++				      struct alt_instr *end,
++				      const s32 *locks_begin,
++				      const s32 *locks_end, u8 *text_begin,
++				      u8 *text_end)
++{
++	struct bhv_alternatives_mod_arch arch = { .locks_begin = locks_begin,
++						  .locks_end = locks_end,
++						  .text_begin = text_begin,
++						  .text_end = text_end };
++	bhv_alternatives_add_module(begin, end, &arch);
++}
++
++static void __bhv_text bhv_add_nops(void *insns, unsigned int len,
++				    bhv_patch_arg_t *bhv_arg, bool patch)
++{
++	size_t total_length = 0;
++
++	while (len > 0) {
++		unsigned int noplen = len;
++		if (noplen > ASM_NOP_MAX)
++			noplen = ASM_NOP_MAX;
++
++		if (patch &&
++		    total_length >=
++			    sizeof(bhv_arg->bhv_patch_patch_arg.src_value))
++			panic("Size for NOP patch exceeded!");
++
++		if (patch) {
++			memcpy(bhv_arg->bhv_patch_patch_arg.src_value +
++				       total_length,
++			       ideal_nops[noplen], noplen);
++			total_length += noplen;
++		} else {
++			memcpy(insns, ideal_nops[noplen], noplen);
++			insns += noplen;
++		}
++
++		len -= noplen;
++	}
++
++	if (patch) {
++		bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++			virt_to_phys(insns);
++		bhv_arg->bhv_patch_patch_arg.size = total_length;
++
++		bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++				  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++	}
++}
++
++static bool __bhv_text bhv_optimize_nops(struct alt_instr *a, u8 *instr,
++					 bhv_patch_arg_t *bhv_arg, bool patch)
++{
++	int i;
++
++	for (i = 0; i < a->padlen; i++) {
++		if (instr[i] != 0x90) {
++			return false;
++		}
++	}
++
++	bhv_add_nops(instr + (a->instrlen - a->padlen), a->padlen, bhv_arg,
++		     patch);
++	return true;
++}
++
++static void __bhv_text bhv_recompute_jump(struct alt_instr *a, u8 *orig_insn,
++					  u8 *repl_insn, u8 *insn_buff)
++{
++	u8 *next_rip, *tgt_rip;
++	s32 n_dspl, o_dspl;
++	int repl_len;
++
++	if (a->replacementlen != 5)
++		return;
++
++	o_dspl = *(s32 *)(insn_buff + 1);
++
++	/* next_rip of the replacement JMP */
++	next_rip = repl_insn + a->replacementlen;
++	/* target rip of the replacement JMP */
++	tgt_rip = next_rip + o_dspl;
++	n_dspl = tgt_rip - orig_insn;
++
++	if (tgt_rip - orig_insn >= 0) {
++		if (n_dspl - 2 <= 127)
++			goto two_byte_jmp;
++		else
++			goto five_byte_jmp;
++		/* negative offset */
++	} else {
++		if (((n_dspl - 2) & 0xff) == (n_dspl - 2))
++			goto two_byte_jmp;
++		else
++			goto five_byte_jmp;
++	}
++
++two_byte_jmp:
++	n_dspl -= 2;
++
++	insn_buff[0] = 0xeb;
++	insn_buff[1] = (s8)n_dspl;
++	bhv_add_nops(insn_buff + 2, 3, NULL, false);
++
++	repl_len = 2;
++	goto done;
++
++five_byte_jmp:
++	n_dspl -= 5;
++
++	insn_buff[0] = 0xe9;
++	*(s32 *)&insn_buff[1] = n_dspl;
++
++	repl_len = 5;
++
++done:
++	return;
++}
++
++static int __bhv_text bhv_alternatives_smp_lock_unlock_apply_vault(
++	u8 *target, bool lock, bhv_patch_arg_t *bhv_arg)
++{
++	static const u8 unlock_opcode = 0x3e;
++	static const u8 lock_opcode = 0xf0;
++
++	unsigned long r = 0;
++	u8 opcode;
++
++	// Check opcode
++	if (lock) {
++		if (*target != unlock_opcode)
++			return -EACCES;
++
++		opcode = lock_opcode;
++	} else {
++		if (*target != lock_opcode)
++			return -EACCES;
++
++		opcode = unlock_opcode;
++	}
++
++	bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++		virt_to_phys((void *)target);
++	memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &opcode, 1);
++	bhv_arg->bhv_patch_patch_arg.size = 1;
++
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++			      BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++	if (r) {
++		panic("BHV vault close failure! hypercall returned %lu", r);
++	}
++	return 0;
++}
++
++static int __bhv_text bhv_alternatives_smp_lock_unlock_vault(
++	struct bhv_alternatives_mod *mod, bool lock, bhv_patch_arg_t *bhv_arg)
++{
++	const s32 *poff;
++
++	for (poff = mod->arch.locks_begin; poff < mod->arch.locks_end; poff++) {
++		u8 *ptr = (u8 *)poff + *poff;
++
++		if (!*poff || ptr < mod->arch.text_begin ||
++		    ptr >= mod->arch.text_end)
++			continue;
++
++		bhv_alternatives_smp_lock_unlock_apply_vault(ptr, lock,
++							     bhv_arg);
++	}
++
++	return 0;
++}
++
++static int __bhv_text bhv_alternatives_patch_vault(struct alt_instr *a,
++						   bhv_patch_arg_t *bhv_arg)
++{
++	u8 *instr, *replacement;
++	u8 insn_buff[254];
++	int insn_buff_sz = 0;
++
++	instr = (u8 *)&a->instr_offset + a->instr_offset;
++	replacement = (u8 *)&a->repl_offset + a->repl_offset;
++
++	if (a->instrlen > sizeof(insn_buff)) {
++		return -EACCES;
++	}
++
++	if (a->cpuid >= (NCAPINTS + NBUGINTS) * 32) {
++		return -EACCES;
++	}
++
++	if (!boot_cpu_has(a->cpuid)) {
++		if (a->padlen > 1) {
++			bhv_optimize_nops(a, instr, bhv_arg, true);
++		}
++
++		return 0;
++	}
++
++	memcpy(insn_buff, replacement, a->replacementlen);
++	insn_buff_sz = a->replacementlen;
++
++	/*
++		* 0xe8 is a relative jump; fix the offset.
++		*
++		* Instruction length is checked before the opcode to avoid
++		* accessing uninitialized bytes for zero-length replacements.
++		*/
++	if (a->replacementlen == 5 && *insn_buff == 0xe8)
++		*(s32 *)(insn_buff + 1) += replacement - instr;
++
++	if (a->replacementlen &&
++	    (replacement[0] == 0xeb || replacement[0] == 0xe9))
++		bhv_recompute_jump(a, instr, replacement, insn_buff);
++
++	if (a->instrlen > a->replacementlen) {
++		bhv_add_nops(insn_buff + a->replacementlen,
++			     a->instrlen - a->replacementlen, NULL, false);
++		insn_buff_sz += a->instrlen - a->replacementlen;
++	}
++
++	if (insn_buff_sz >= sizeof(bhv_arg->bhv_patch_patch_arg.src_value))
++		panic("Instruction buffer size too small!");
++
++	bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++		virt_to_phys((void *)instr);
++	memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &insn_buff,
++	       insn_buff_sz);
++	bhv_arg->bhv_patch_patch_arg.size = insn_buff_sz;
++
++	return bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++				 BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++}
++
++int __bhv_text bhv_alternatives_apply_vault_arch(
++	struct bhv_alternatives_mod *mod, void *arch, bhv_patch_arg_t *bhv_arg)
++{
++	struct alt_instr *a;
++	int rv = 0;
++	bool *smp = arch;
++
++	// SMP?
++	if (smp != NULL) {
++		bhv_alternatives_smp_lock_unlock_vault(mod, *smp, bhv_arg);
++	}
++
++	for (a = mod->begin; a < mod->end; a++) {
++		if (rv == 0)
++			rv = bhv_alternatives_patch_vault(a, bhv_arg);
++		else
++			bhv_alternatives_patch_vault(a, bhv_arg);
++	}
++
++	return rv;
++}
++
++bool __bhv_text bhv_alternatives_find_by_lock(void *search_param,
++					      struct bhv_alternatives_mod *cur)
++{
++	struct bhv_alternatives_lock_search_param *param = search_param;
++
++	if (cur->arch.locks_begin == param->locks_begin &&
++	    cur->arch.locks_end == param->locks_end) {
++		return true;
++	}
++
++	return false;
++}
++
++extern struct alt_instr __alt_instructions[], __alt_instructions_end[];
++extern s32 __smp_locks[], __smp_locks_end[];
++struct bhv_alternatives_mod *__bhv_text
++bhv_alternatives_get_static_mods_vault(uint32_t *nr_mods)
++{
++#if defined(CONFIG_X86_64) && defined(CONFIG_X86_X32_ABI) &&                   \
++	defined(CONFIG_COMPAT)
++#define MOD_NR 4 // kernel + 3 VDSO
++#endif
++#if defined(CONFIG_X86_64) && !defined(CONFIG_X86_X32_ABI) &&                  \
++	defined(CONFIG_COMPAT)
++#define MOD_NR 3 // kernel + 2 VDSO
++#endif
++#if defined(CONFIG_X86_64) && !defined(CONFIG_X86_X32_ABI) &&                  \
++	!defined(CONFIG_COMPAT)
++#define MOD_NR 2 // kernel + 1 VDSO
++#endif
++#if defined(CONFIG_X86_32) && defined(CONFIG_X86_X32_ABI)
++#define MOD_NR 3 // kernel + 2 VDSO
++#endif
++#if defined(CONFIG_X86_32) && !defined(CONFIG_X86_X32_ABI)
++#define MOD_NR 2 // kernel + 1 VDSO
++#endif
++#if defined(CONFIG_X86_X32_ABI) && !defined(CONFIG_X86_32) &&                  \
++	!defined(CONFIG_COMPAT)
++#define MOD_NR 2 // kernel + 1 VDSO
++#endif
++	static struct bhv_alternatives_mod static_mods[MOD_NR];
++	uint32_t counter = 0;
++
++	// Init kernel.
++	static_mods[counter].begin = __alt_instructions;
++	static_mods[counter].end = __alt_instructions_end;
++	static_mods[counter].delete_policy = BHV_ALTERNATIVES_DELETE_AFTER_INIT;
++	static_mods[counter].allocated = false;
++	static_mods[counter].arch.locks_begin = __smp_locks;
++	static_mods[counter].arch.locks_end = __smp_locks_end;
++	static_mods[counter].arch.text_begin = _text;
++	static_mods[counter].arch.text_end = _etext;
++	static_mods[counter].next.next = NULL;
++	static_mods[counter].next.prev = NULL;
++#if defined(CONFIG_X86_64)
++	// Init x64 VDSO
++	counter++;
++	static_mods[counter].begin =
++		(void *)(vdso_image_64.data + vdso_image_64.alt);
++	static_mods[counter].end =
++		(void *)(vdso_image_64.data + vdso_image_64.alt +
++			 vdso_image_64.alt_len);
++	static_mods[counter].delete_policy = BHV_ALTERNATIVES_DELETE_AFTER_INIT;
++	static_mods[counter].allocated = false;
++	static_mods[counter].arch.locks_begin = NULL;
++	static_mods[counter].arch.locks_end = NULL;
++	static_mods[counter].arch.text_begin = NULL;
++	static_mods[counter].arch.text_end = NULL;
++	static_mods[counter].next.next = NULL;
++	static_mods[counter].next.prev = NULL;
++#endif
++#if defined(CONFIG_X86_32) || defined(CONFIG_COMPAT)
++	// Init x64 VDSO
++	counter++;
++	static_mods[counter].begin =
++		(void *)(vdso_image_32.data + vdso_image_32.alt);
++	static_mods[counter].end =
++		(void *)(vdso_image_32.data + vdso_image_32.alt +
++			 vdso_image_32.alt_len);
++	static_mods[counter].delete_policy = BHV_ALTERNATIVES_DELETE_AFTER_INIT;
++	static_mods[counter].allocated = false;
++	static_mods[counter].arch.locks_begin = NULL;
++	static_mods[counter].arch.locks_end = NULL;
++	static_mods[counter].arch.text_begin = NULL;
++	static_mods[counter].arch.text_end = NULL;
++	static_mods[counter].next.next = NULL;
++	static_mods[counter].next.prev = NULL;
++#endif
++#if defined(CONFIG_X86_X32_ABI)
++	// Init x64 VDSO
++	counter++;
++	static_mods[counter].begin =
++		(void *)(vdso_image_x32.data + vdso_image_x32.alt);
++	static_mods[counter].end =
++		(void *)(vdso_image_x32.data + vdso_image_x32.alt +
++			 vdso_image_x32.alt_len);
++	static_mods[counter].delete_policy = BHV_ALTERNATIVES_DELETE_AFTER_INIT;
++	static_mods[counter].allocated = false;
++	static_mods[counter].arch.locks_begin = NULL;
++	static_mods[counter].arch.locks_end = NULL;
++	static_mods[counter].arch.text_begin = NULL;
++	static_mods[counter].arch.text_end = NULL;
++	static_mods[counter].next.next = NULL;
++	static_mods[counter].next.prev = NULL;
++#endif
++	*nr_mods = MOD_NR;
++	return &static_mods[0];
++}
+\ No newline at end of file
+diff --git arch/x86/bhv/patch_jump_label.c arch/x86/bhv/patch_jump_label.c
+new file mode 100644
+index 000000000000..c8a74886d324
+--- /dev/null
++++ arch/x86/bhv/patch_jump_label.c
+@@ -0,0 +1,67 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#include <asm/bhv/integrity.h>
++
++#include <asm-generic/bug.h>
++#include <linux/jump_label.h>
++#include <asm/text-patching.h>
++#include <linux/string.h>
++
++bool __bhv_text bhv_jump_label_validate_opcode(struct jump_entry *entry,
++					       enum jump_label_type type,
++					       const void *expected_opcode,
++					       size_t len)
++{
++	const unsigned char default_nop[] = { STATIC_KEY_INIT_NOP };
++	const unsigned char *ideal_nop = ideal_nops[NOP_ATOMIC5];
++	const void *code;
++	const void *addr, *dest;
++
++	if (len != JUMP_LABEL_NOP_SIZE)
++		return false;
++
++	addr = (void *)jump_entry_code(entry);
++	dest = (void *)jump_entry_target(entry);
++
++	code = text_gen_insn(JMP32_INSN_OPCODE, addr, dest);
++
++	if (type != JUMP_LABEL_JMP) {
++		if (memcmp(addr, code, len))
++			return false;
++		if (memcmp(expected_opcode, ideal_nop, len))
++			return false;
++	} else {
++		if (memcmp(addr, ideal_nop, len) &&
++		    memcmp(addr, default_nop, len))
++			return false;
++		if (memcmp(expected_opcode, code, len))
++			return false;
++	}
++	return true;
++}
+diff --git arch/x86/bhv/start.c arch/x86/bhv/start.c
+new file mode 100644
+index 000000000000..89a4318b5e7f
+--- /dev/null
++++ arch/x86/bhv/start.c
+@@ -0,0 +1,57 @@
++/*
++ * Copyright (C) 2022, BedRock Systems, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
++ * NON INFRINGEMENT.  See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++#include <asm/hypervisor.h>
++#include <asm/processor.h>
++#include <asm/x86_init.h>
++#include <asm/bhv/integrity.h>
++
++#include <bhv/start.h>
++
++static uint32_t __init bhv_detect(void)
++{
++	if (boot_cpu_data.cpuid_level < 0)
++		return 0;	/* So we don't blow up on old processors */
++
++	if (boot_cpu_has(X86_FEATURE_HYPERVISOR))
++		return hypervisor_cpuid_base("BHV.VMM.VAS.", 0);
++
++	return 0;
++}
++
++static void __init bhv_init_platform_x86(void)
++{
++	bhv_integrity_arch_init();
++	bhv_init_platform();
++}
++
++const __initconst struct hypervisor_x86 x86_hyper_bhv = {
++	.name = "BHV BRASS",
++	.detect = bhv_detect,
++	.type = X86_HYPER_BHV,
++	.init.guest_late_init = x86_init_noop,
++	.init.x2apic_available = bool_x86_init_noop,
++	.init.init_platform = bhv_init_platform_x86
++};
++
++int bhv_start_arch(void)
++{
++	return bhv_start_integrity_arch();
++}
+diff --git arch/x86/include/asm/bhv/hypercall.h arch/x86/include/asm/bhv/hypercall.h
+new file mode 100644
+index 000000000000..b3b6634b741b
+--- /dev/null
++++ arch/x86/include/asm/bhv/hypercall.h
+@@ -0,0 +1,48 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __ASM_BHV_HYPERCALL_H__
++#define __ASM_BHV_HYPERCALL_H__
++
++static __always_inline unsigned long BHV_HYPERCALL(uint16_t target,
++						   uint32_t backend,
++						   uint32_t op, uint32_t ver,
++						   uint64_t arg)
++{
++	unsigned long rv;
++	// https://gcc.gnu.org/onlinedocs/gcc/Local-Register-Variables.html
++	register unsigned long r8 __asm__("r8") = arg;
++	__asm__ __volatile__("vmcall\n\t"
++			     : "=a"(rv)
++			     : "D"(target), "S"(backend), "d"(op), "c"(ver),
++			       "r"(r8)
++			     :);
++	return rv;
++}
++
++#endif /* __ASM_BHV_HYPERCALL_H__ */
+diff --git arch/x86/include/asm/bhv/integrity.h arch/x86/include/asm/bhv/integrity.h
+new file mode 100644
+index 000000000000..8bf475fcb206
+--- /dev/null
++++ arch/x86/include/asm/bhv/integrity.h
+@@ -0,0 +1,47 @@
++/*
++ * Copyright (C) 2022, BedRock Systems, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
++ * NON INFRINGEMENT.  See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++#ifndef __ASM_BHV_INTEGRITY_H__
++#define __ASM_BHV_INTEGRITY_H__
++
++#ifdef CONFIG_BHV_VAS
++
++#include <bhv/bhv.h>
++
++void __init bhv_integrity_arch_init(void);
++int bhv_start_integrity_arch(void);
++void __init bhv_register_idt(uint64_t addr,
++							 int numpages);
++
++#ifdef CONFIG_JUMP_LABEL
++#include <linux/jump_label.h>
++
++bool __bhv_text bhv_jump_label_validate_opcode(struct jump_entry *entry,
++					       enum jump_label_type type,
++					       const void *expected_opcode,
++					       size_t len);
++#endif /* CONFIG_JUMP_LABEL */
++#else /* CONFIG_BHV_VAS */
++static inline void __init bhv_register_idt(uint64_t addr, int numpages)
++{
++}
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __ASM_BHV_INTEGRITY_H__ */
+diff --git arch/x86/include/asm/bhv/patch.h arch/x86/include/asm/bhv/patch.h
+new file mode 100644
+index 000000000000..85d848817b5f
+--- /dev/null
++++ arch/x86/include/asm/bhv/patch.h
+@@ -0,0 +1,72 @@
++/*
++ * Copyright (C) 2022, BedRock Systems, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
++ * NON INFRINGEMENT.  See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++#ifndef __ASM_BHV_PATCH_H__
++#define __ASM_BHV_PATCH_H__
++
++struct bhv_alternatives_mod;
++struct bhv_alternatives_mod_arch {
++	const s32 *locks_begin;
++	const s32 *locks_end;
++	u8 *text_begin;
++	u8 *text_end;
++};
++
++#ifdef CONFIG_BHV_VAS
++
++#include <bhv/bhv.h>
++#include <bhv/patch.h>
++#include <bhv/interface/patch.h>
++
++#ifdef CONFIG_JUMP_LABEL
++#include <linux/jump_label.h>
++
++bool __bhv_text bhv_jump_label_validate_opcode(struct jump_entry *entry,
++					       enum jump_label_type type,
++					       const void *expected_opcode,
++					       size_t len);
++#endif /* CONFIG_JUMP_LABEL */
++
++struct bhv_alternatives_lock_search_param {
++	const s32 *locks_begin;
++	const s32 *locks_end;
++};
++
++bool __bhv_text bhv_alternatives_find_by_lock(void *search_param,
++					      struct bhv_alternatives_mod *cur);
++int __bhv_text bhv_alternatives_apply_vault_arch(
++	struct bhv_alternatives_mod *mod, void *arch, bhv_patch_arg_t *bhv_arg);
++void bhv_alternatives_add_module_arch(struct alt_instr *begin,
++				      struct alt_instr *end, const s32 *locks,
++				      const s32 *locks_end, u8 *text,
++				      u8 *text_end);
++struct bhv_alternatives_mod *__bhv_text
++bhv_alternatives_get_static_mods_vault(uint32_t *nr_mods);
++#else
++static inline void bhv_alternatives_add_module_arch(struct alt_instr *begin,
++						    struct alt_instr *end,
++						    const s32 *locks,
++						    const s32 *locks_end,
++						    u8 *text, u8 *text_end)
++{
++}
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __ASM_BHV_PATCH_H__ */
+\ No newline at end of file
+diff --git arch/x86/include/asm/hypervisor.h arch/x86/include/asm/hypervisor.h
+index e41cbf2ec41d..591e48b05097 100644
+--- arch/x86/include/asm/hypervisor.h
++++ arch/x86/include/asm/hypervisor.h
+@@ -30,6 +30,7 @@ enum x86_hypervisor_type {
+ 	X86_HYPER_KVM,
+ 	X86_HYPER_JAILHOUSE,
+ 	X86_HYPER_ACRN,
++	X86_HYPER_BHV
+ };
+ 
+ #ifdef CONFIG_HYPERVISOR_GUEST
+@@ -65,6 +66,7 @@ extern const struct hypervisor_x86 x86_hyper_kvm;
+ extern const struct hypervisor_x86 x86_hyper_jailhouse;
+ extern const struct hypervisor_x86 x86_hyper_acrn;
+ extern struct hypervisor_x86 x86_hyper_xen_hvm;
++extern const struct hypervisor_x86 x86_hyper_bhv;
+ 
+ extern bool nopv;
+ extern enum x86_hypervisor_type x86_hyper_type;
+diff --git arch/x86/kernel/alternative.c arch/x86/kernel/alternative.c
+index 2400ad62f330..c86787f5aa54 100644
+--- arch/x86/kernel/alternative.c
++++ arch/x86/kernel/alternative.c
+@@ -29,6 +29,8 @@
+ #include <asm/io.h>
+ #include <asm/fixmap.h>
+ 
++#include <asm/bhv/patch.h>
++
+ int __read_mostly alternatives_patched;
+ 
+ EXPORT_SYMBOL_GPL(alternatives_patched);
+@@ -255,6 +257,7 @@ void __init arch_init_ideal_nops(void)
+ 	}
+ }
+ 
++#ifndef CONFIG_BHV_VAS
+ /* Use this to add nops to a buffer, then text_poke the whole buffer. */
+ static void __init_or_module add_nops(void *insns, unsigned int len)
+ {
+@@ -267,6 +270,7 @@ static void __init_or_module add_nops(void *insns, unsigned int len)
+ 		len -= noplen;
+ 	}
+ }
++#endif /* !CONFIG_BHV_VAS */
+ 
+ extern struct alt_instr __alt_instructions[], __alt_instructions_end[];
+ extern s32 __smp_locks[], __smp_locks_end[];
+@@ -280,6 +284,7 @@ static inline bool is_jmp(const u8 opcode)
+ 	return opcode == 0xeb || opcode == 0xe9;
+ }
+ 
++#ifndef CONFIG_BHV_VAS
+ static void __init_or_module
+ recompute_jump(struct alt_instr *a, u8 *orig_insn, u8 *repl_insn, u8 *insn_buff)
+ {
+@@ -358,6 +363,7 @@ static void __init_or_module noinline optimize_nops(struct alt_instr *a, u8 *ins
+ 	DUMP_BYTES(instr, a->instrlen, "%px: [%d:%d) optimized NOPs: ",
+ 		   instr, a->instrlen - a->padlen, a->padlen);
+ }
++#endif /* !CONFIG_BHV_VAS */
+ 
+ /*
+  * Replace instructions with better alternatives for this CPU type. This runs
+@@ -372,6 +378,9 @@ static void __init_or_module noinline optimize_nops(struct alt_instr *a, u8 *ins
+ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
+ 						  struct alt_instr *end)
+ {
++#ifdef CONFIG_BHV_VAS
++	bhv_alternatives_apply(start, end, NULL);
++#else /* !CONFIG_BHV_VAS */
+ 	struct alt_instr *a;
+ 	u8 *instr, *replacement;
+ 	u8 insn_buff[MAX_PATCH_LEN];
+@@ -437,9 +446,11 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
+ 
+ 		text_poke_early(instr, insn_buff, insn_buff_sz);
+ 	}
++#endif /* CONFIG_BHV_VAS */
+ }
+ 
+ #ifdef CONFIG_SMP
++#ifndef CONFIG_BHV_VAS
+ static void alternatives_smp_lock(const s32 *start, const s32 *end,
+ 				  u8 *text, u8 *text_end)
+ {
+@@ -471,6 +482,7 @@ static void alternatives_smp_unlock(const s32 *start, const s32 *end,
+ 			text_poke(ptr, ((unsigned char []){0x3E}), 1);
+ 	}
+ }
++#endif /* !CONFIG_BHV_VAS */
+ 
+ struct smp_alt_module {
+ 	/* what is this ??? */
+@@ -497,6 +509,11 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
+ {
+ 	struct smp_alt_module *smp;
+ 
++#ifdef CONFIG_BHV_VAS
++	struct bhv_alternatives_lock_search_param p;
++	bool smp_lock;
++#endif
++
+ 	mutex_lock(&text_mutex);
+ 	if (!uniproc_patched)
+ 		goto unlock;
+@@ -522,7 +539,19 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
+ 
+ 	list_add_tail(&smp->next, &smp_alt_modules);
+ smp_unlock:
++#ifdef CONFIG_BHV_VAS
++	// Add module with locks as this will be used for SMP only
++	bhv_alternatives_add_module_arch(locks, locks_end, locks, locks_end,
++					 text, text_end);
++	// Apply
++	smp_lock = false;
++	p.locks_begin = locks;
++	p.locks_end = locks_end;
++	bhv_alternatives_apply_custom_filter(&p, &smp,
++					     bhv_alternatives_find_by_lock);
++#else /* !CONFIG_BHV_VAS */
+ 	alternatives_smp_unlock(locks, locks_end, text, text_end);
++#endif /* CONFIG_BHV_VAS */
+ unlock:
+ 	mutex_unlock(&text_mutex);
+ }
+@@ -556,9 +585,19 @@ void alternatives_enable_smp(void)
+ 		BUG_ON(num_online_cpus() != 1);
+ 		clear_cpu_cap(&boot_cpu_data, X86_FEATURE_UP);
+ 		clear_cpu_cap(&cpu_data(0), X86_FEATURE_UP);
+-		list_for_each_entry(mod, &smp_alt_modules, next)
++		list_for_each_entry (mod, &smp_alt_modules, next) {
++#ifdef CONFIG_BHV_VAS
++			struct bhv_alternatives_lock_search_param p;
++			bool smp = true;
++			p.locks_begin = mod->locks;
++			p.locks_end = mod->locks_end;
++			bhv_alternatives_apply_custom_filter(
++				&p, &smp, bhv_alternatives_find_by_lock);
++#else /* !CONFIG_BHV_VAS */
+ 			alternatives_smp_lock(mod->locks, mod->locks_end,
+ 					      mod->text, mod->text_end);
++#endif /* CONFIG_BHV_VAS */
++		}
+ 		uniproc_patched = false;
+ 	}
+ 	mutex_unlock(&text_mutex);
+diff --git arch/x86/kernel/cpu/hypervisor.c arch/x86/kernel/cpu/hypervisor.c
+index 553bfbfc3a1b..20bfa373b05b 100644
+--- arch/x86/kernel/cpu/hypervisor.c
++++ arch/x86/kernel/cpu/hypervisor.c
+@@ -45,6 +45,9 @@ static const __initconst struct hypervisor_x86 * const hypervisors[] =
+ #ifdef CONFIG_ACRN_GUEST
+ 	&x86_hyper_acrn,
+ #endif
++#ifdef CONFIG_BHV_VAS
++	&x86_hyper_bhv,
++#endif
+ };
+ 
+ enum x86_hypervisor_type x86_hyper_type;
+diff --git arch/x86/kernel/idt.c arch/x86/kernel/idt.c
+index ee1a283f8e96..93615b1064fc 100644
+--- arch/x86/kernel/idt.c
++++ arch/x86/kernel/idt.c
+@@ -10,6 +10,7 @@
+ #include <asm/proto.h>
+ #include <asm/desc.h>
+ #include <asm/hw_irq.h>
++#include <asm/bhv/integrity.h>
+ 
+ #define DPL0		0x0
+ #define DPL3		0x3
+@@ -310,6 +311,8 @@ void __init idt_setup_apic_and_irq_gates(void)
+ 	/* Make the IDT table read only */
+ 	set_memory_ro((unsigned long)&idt_table, 1);
+ 
++	bhv_register_idt((uint64_t)&idt_table, 1);
++
+ 	idt_setup_done = true;
+ }
+ 
+diff --git arch/x86/kernel/jump_label.c arch/x86/kernel/jump_label.c
+index 5ba8477c2cb7..1095e175acf5 100644
+--- arch/x86/kernel/jump_label.c
++++ arch/x86/kernel/jump_label.c
+@@ -15,6 +15,8 @@
+ #include <asm/kprobes.h>
+ #include <asm/alternative.h>
+ #include <asm/text-patching.h>
++#include <bhv/bhv.h>
++#include <bhv/patch.h>
+ 
+ static void bug_at(const void *ip, int line)
+ {
+@@ -58,9 +60,30 @@ __jump_label_set_jump_code(struct jump_entry *entry, enum jump_label_type type,
+ 	return code;
+ }
+ 
++#ifdef CONFIG_BHV_VAS
++static void __orig_jump_label_transform(struct jump_entry *entry,
++					enum jump_label_type type, int init);
++
+ static inline void __jump_label_transform(struct jump_entry *entry,
+ 					  enum jump_label_type type,
+ 					  int init)
++{
++	if (bhv_initialized) {
++		const void *opcode =
++			__jump_label_set_jump_code(entry, type, init);
++		bhv_patch_jump_label(entry, opcode, JUMP_LABEL_NOP_SIZE);
++	} else {
++		__orig_jump_label_transform(entry, type, init);
++	}
++}
++
++static inline void __orig_jump_label_transform(struct jump_entry *entry,
++					       enum jump_label_type type,
++					       int init)
++#else /* CONFIG_BHV_VAS */
++static inline void __jump_label_transform(struct jump_entry *entry,
++					  enum jump_label_type type, int init)
++#endif /* CONFIG_BHV_VAS */
+ {
+ 	const void *opcode = __jump_label_set_jump_code(entry, type, init);
+ 
+@@ -114,18 +137,28 @@ bool arch_jump_label_transform_queue(struct jump_entry *entry,
+ 
+ 	mutex_lock(&text_mutex);
+ 	opcode = __jump_label_set_jump_code(entry, type, 0);
++#ifdef CONFIG_BHV_VAS
++	bhv_patch_jump_label(entry, opcode, JUMP_LABEL_NOP_SIZE);
++#else
+ 	text_poke_queue((void *)jump_entry_code(entry),
+ 			opcode, JUMP_LABEL_NOP_SIZE, NULL);
++#endif
+ 	mutex_unlock(&text_mutex);
+ 	return true;
+ }
+ 
++#ifdef CONFIG_BHV_VAS
++void arch_jump_label_transform_apply(void)
++{
++}
++#else /* CONFIG_BHV_VAS */
+ void arch_jump_label_transform_apply(void)
+ {
+ 	mutex_lock(&text_mutex);
+ 	text_poke_finish();
+ 	mutex_unlock(&text_mutex);
+ }
++#endif /* CONFIG_BHV_VAS */
+ 
+ static enum {
+ 	JL_STATE_START,
+diff --git arch/x86/kernel/module.c arch/x86/kernel/module.c
+index 5e9a34b5bd74..b6f21fd1a7ba 100644
+--- arch/x86/kernel/module.c
++++ arch/x86/kernel/module.c
+@@ -25,6 +25,8 @@
+ #include <asm/setup.h>
+ #include <asm/unwind.h>
+ 
++#include <asm/bhv/patch.h>
++
+ #if 0
+ #define DEBUGP(fmt, ...)				\
+ 	printk(KERN_DEBUG fmt, ##__VA_ARGS__)
+@@ -254,6 +256,12 @@ int module_finalize(const Elf_Ehdr *hdr,
+ 		*para = NULL, *orc = NULL, *orc_ip = NULL;
+ 	char *secstrings = (void *)hdr + sechdrs[hdr->e_shstrndx].sh_offset;
+ 
++#ifdef CONFIG_BHV_VAS
++	void *alt_start = NULL;
++	void *alt_end = NULL;
++	struct bhv_alternatives_mod_arch arch;
++#endif
++
+ 	for (s = sechdrs; s < sechdrs + hdr->e_shnum; s++) {
+ 		if (!strcmp(".text", secstrings + s->sh_name))
+ 			text = s;
+@@ -269,9 +277,26 @@ int module_finalize(const Elf_Ehdr *hdr,
+ 			orc_ip = s;
+ 	}
+ 
++#ifdef CONFIG_BHV_VAS
++	if (alt) {
++		alt_start = (void *)alt->sh_addr;
++		alt_end = alt_start + alt->sh_size;
++	}
++
++	if (locks && text) {
++		arch.locks_begin = (void *)locks->sh_addr;
++		arch.locks_end = (void *)locks->sh_addr + locks->sh_size;
++		arch.text_begin = (void *)text->sh_addr;
++		arch.text_end = (void *)text->sh_addr + text->sh_size;
++	}
++#endif /* CONFIG_BHV_VAS */
++
+ 	if (alt) {
+ 		/* patch .altinstructions */
+ 		void *aseg = (void *)alt->sh_addr;
++#ifdef CONFIG_BHV_VAS
++		bhv_alternatives_add_module(alt_start, alt_end, &arch);
++#endif /* CONFIG_BHV_VAS */
+ 		apply_alternatives(aseg, aseg + alt->sh_size);
+ 	}
+ 	if (locks && text) {
+diff --git arch/x86/kernel/vmlinux.lds.S arch/x86/kernel/vmlinux.lds.S
+index bf9e0adb5b7e..58c5485e47d4 100644
+--- arch/x86/kernel/vmlinux.lds.S
++++ arch/x86/kernel/vmlinux.lds.S
+@@ -137,6 +137,7 @@ SECTIONS
+ 		ALIGN_ENTRY_TEXT_END
+ 		SOFTIRQENTRY_TEXT
+ 		STATIC_CALL_TEXT
++		BHV_TEXT
+ 		*(.fixup)
+ 		*(.gnu.warning)
+ 
+@@ -354,6 +355,17 @@ SECTIONS
+ 	}
+ #endif
+ 
++#ifdef CONFIG_BHV_VAS
++	. = ALIGN(PAGE_SIZE);
++	.bhv.data : AT(ADDR(.bhv.data) - LOAD_OFFSET) {
++		__bhv_data_start = .;
++		. += PAGE_SIZE;
++		*(.bhv.data)
++		. = ALIGN(PAGE_SIZE);
++		__bhv_data_end = .;
++	}
++#endif
++
+ 	/* BSS */
+ 	. = ALIGN(PAGE_SIZE);
+ 	.bss : AT(ADDR(.bss) - LOAD_OFFSET) {
+diff --git include/asm-generic/sections.h include/asm-generic/sections.h
+index d16302d3eb59..5ce32b4ce2e0 100644
+--- include/asm-generic/sections.h
++++ include/asm-generic/sections.h
+@@ -58,6 +58,13 @@ extern char __noinstr_text_start[], __noinstr_text_end[];
+ 
+ extern __visible const void __nosave_begin, __nosave_end;
+ 
++#ifdef CONFIG_BHV_VAS
++extern char __bhv_text_start[];
++extern char __bhv_text_end[];
++extern char __bhv_data_start[];
++extern char __bhv_data_end[];
++#endif
++
+ /* Function descriptor handling (if any).  Override in asm/sections.h */
+ #ifndef dereference_function_descriptor
+ #define dereference_function_descriptor(p) ((void *)(p))
+diff --git include/asm-generic/vmlinux.lds.h include/asm-generic/vmlinux.lds.h
+index a774361f28d4..4b1e92cdc356 100644
+--- include/asm-generic/vmlinux.lds.h
++++ include/asm-generic/vmlinux.lds.h
+@@ -656,6 +656,17 @@
+ 		*(.static_call.text)					\
+ 		__static_call_text_end = .;
+ 
++#ifdef CONFIG_BHV_VAS
++#define BHV_TEXT							\
++		. = ALIGN(PAGE_SIZE);				\
++		__bhv_text_start = .;				\
++		*(.bhv.text)						\
++		. = ALIGN(PAGE_SIZE);				\
++		__bhv_text_end = .;
++#else
++#define BHV_TEXT
++#endif
++
+ /* Section used for early init (in .S files) */
+ #define HEAD_TEXT  KEEP(*(.head.text))
+ 
+diff --git include/bhv/bhv.h include/bhv/bhv.h
+new file mode 100644
+index 000000000000..eb54a5405b2d
+--- /dev/null
++++ include/bhv/bhv.h
+@@ -0,0 +1,55 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_BHV_H__
++#define __BVH_BHV_H__
++
++#include <linux/kernel.h>
++
++#define __bhv_text __section(".bhv.text") noinline
++#define __bhv_data __section(".bhv.data") noinline
++
++#ifdef CONFIG_BHV_PANIC_ON_FAIL
++#define bhv_fail(fmt, ...) panic(fmt, ##__VA_ARGS__)
++#else
++#define bhv_fail(fmt, ...) pr_err(fmt, ##__VA_ARGS__)
++#endif
++
++extern bool bhv_initialized __ro_after_init;
++
++void bhv_init(void);
++
++#ifdef CONFIG_BHV_VAS
++void __init bhv_mm_init(void);
++#else /* CONFIG_BHV_VAS */
++static inline void bhv_mm_init(void)
++{
++}
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __BVH_BHV_H__ */
+diff --git include/bhv/init.h include/bhv/init.h
+new file mode 100644
+index 000000000000..356a288ad3c7
+--- /dev/null
++++ include/bhv/init.h
+@@ -0,0 +1,36 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_INIT_H__
++#define __BHV_INIT_H__
++
++int __init bhv_init_hyp(void *init_start, uint64_t init_size, void *text_start,
++			uint64_t text_size);
++int bhv_start_hyp(void);
++
++#endif /* __BHV_INIT_H__ */
+diff --git include/bhv/integrity.h include/bhv/integrity.h
+new file mode 100644
+index 000000000000..efb6d5e8d94b
+--- /dev/null
++++ include/bhv/integrity.h
+@@ -0,0 +1,92 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_INTEGRITY_H__
++#define __BHV_INTEGRITY_H__
++
++#include <linux/list.h>
++
++#include <bhv/bhv.h>
++#include <bhv/interface/integrity.h>
++
++#ifdef CONFIG_BHV_VAS
++struct bhv_mem_region_node {
++	bhv_mem_region_t region;
++	struct list_head list;
++};
++typedef struct bhv_mem_region_node bhv_mem_region_node_t;
++
++extern struct kmem_cache *bhv_mem_region_cache;
++
++void __init bhv_integrity_mm_init(void);
++
++int bhv_integrity_disable_events(void);
++int bhv_create_kern_phys_mem_region_hyp(uint64_t owner,
++					bhv_mem_region_t *region_head);
++int bhv_update_kern_phys_mem_region_hyp(bhv_mem_region_t *region_head);
++int bhv_remove_kern_phys_mem_region_by_region_hyp(bhv_mem_region_t *region_head);
++int bhv_remove_kern_phys_mem_region_by_owner_hyp(uint64_t owner);
++
++#else /* CONFIG_BHV_VAS */
++
++static inline void bhv_integrity_mm_init(void)
++{
++}
++
++static inline int bhv_integrity_disable_events(void)
++{
++	return 0;
++}
++
++static inline int
++bhv_create_kern_phys_mem_region_hyp(uint64_t owner,
++				    bhv_mem_region_t *region_head)
++{
++	return 0;
++}
++
++static inline int
++bhv_update_kern_phys_mem_region_hyp(bhv_mem_region_t *region_head)
++{
++	return 0;
++}
++
++static inline int
++bhv_remove_kern_phys_mem_region_by_region_hyp(bhv_mem_region_t *region_head)
++{
++	return 0;
++}
++
++static inline int bhv_remove_kern_phys_mem_region_by_owner_hyp(uint64_t owner)
++{
++	return 0;
++}
++
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __BHV_INTEGRITY_H__ */
+diff --git include/bhv/interface/common.h include/bhv/interface/common.h
+new file mode 100644
+index 000000000000..875bbd957e71
+--- /dev/null
++++ include/bhv/interface/common.h
+@@ -0,0 +1,50 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_INTERFACE_COMMON_H__
++#define __BHV_INTERFACE_COMMON_H__
++
++/* BHV VAS ABI version */
++
++#define BHV_VAS_ABI_VERSION 0xbed00001u
++
++/* BHV Targets */
++
++#define TARGET_BHV_VAS 1
++
++/* BHV VAS Backends */
++
++#define BHV_VAS_BACKEND_INIT 1
++#define BHV_VAS_BACKEND_INTEGRITY 2
++#define BHV_VAS_BACKEND_PATCH 3
++#define BHV_VAS_BACKEND_VAULT 4
++
++/* Common Defines */
++#define BHV_INVALID_PHYS_ADDR (~0ULL)
++
++#endif /* __BHV_INTERFACE_COMMON_H__ */
+diff --git include/bhv/interface/hypercall.h include/bhv/interface/hypercall.h
+new file mode 100644
+index 000000000000..8461ea3b0750
+--- /dev/null
++++ include/bhv/interface/hypercall.h
+@@ -0,0 +1,64 @@
++/******************************************************************************
++ * hypercall.h
++ *
++ * Linux-specific hypervisor handling.
++ *
++ * Sergej Proskurin <sergej@bedrocksystems.com>, BedRock Systems, 2021
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ */
++
++#ifndef _ASM_INTERFACE_BHV_HYPERCALL_H
++#define _ASM_INTERFACE_BHV_HYPERCALL_H
++
++#include <linux/kernel.h>
++#include <asm/bhv/hypercall.h>
++#include <asm/io.h>
++
++#include <bhv/interface/common.h>
++
++static __always_inline unsigned long bhv_hypercall_vas(uint32_t backend,
++						       uint32_t op, void *arg)
++{
++	unsigned long rv;
++	uint64_t phys_addr = BHV_INVALID_PHYS_ADDR;
++
++	if (arg != NULL)
++		phys_addr = virt_to_phys(arg);
++
++	rv = BHV_HYPERCALL(TARGET_BHV_VAS, backend, op, BHV_VAS_ABI_VERSION,
++			   phys_addr);
++#ifdef CONFIG_BHV_PANIC_ON_FAIL
++	if (rv) {
++		panic("BHV Hypercall failure! hypercall returned %lu (%u %u %u %x %p %llx)",
++		      rv, TARGET_BHV_VAS, backend, op, BHV_VAS_ABI_VERSION, arg,
++		      phys_addr);
++	}
++#endif /* CONFIG_BHV_PANIC_ON_FAIL */
++
++	return rv;
++}
++
++#endif /* _ASM_INTERFACE_BHV_HYPERCALL_H */
+diff --git include/bhv/interface/init.h include/bhv/interface/init.h
+new file mode 100644
+index 000000000000..da3300a0543a
+--- /dev/null
++++ include/bhv/interface/init.h
+@@ -0,0 +1,51 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_INTERFACE_INIT_H__
++#define __BHV_INTERFACE_INIT_H__
++
++/* BHV VAS INIT BACKEND OPS */
++#define BHV_VAS_INIT_OP_INIT 0
++#define BHV_VAS_INIT_OP_START 1
++
++typedef struct {
++	uint64_t bhv_data_start;
++	uint64_t bhv_data_size;
++	uint64_t bhv_text_start;
++	uint64_t bhv_text_size;
++	uint64_t owner;
++	uint64_t region_head;
++} __attribute__((__packed__)) bhv_init_init_arg_t;
++
++typedef struct {
++	union {
++		bhv_init_init_arg_t bhv_init_init_arg;
++	};
++} __attribute__((__packed__)) bhv_init_arg_t;
++
++#endif /* __BHV_INTERFACE_INIT_H__ */
+diff --git include/bhv/interface/integrity.h include/bhv/interface/integrity.h
+new file mode 100644
+index 000000000000..5c98f47e0c2a
+--- /dev/null
++++ include/bhv/interface/integrity.h
+@@ -0,0 +1,114 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_INTERFACE_INTEGRITY_H__
++#define __BHV_INTERFACE_INTEGRITY_H__
++
++#include <linux/slab.h>
++
++#define BHV_MEM_TYPE_UNKNOWN			0U
++#define BHV_MEM_TYPE_CODE			1U
++#define BHV_MEM_TYPE_CODE_WRITABLE		2U
++#define BHV_MEM_TYPE_CODE_PATCHABLE		3U
++#define BHV_MEM_TYPE_DATA			4U
++#define BHV_MEM_TYPE_DATA_READ_ONLY		5U
++
++#define BHV_MEM_FLAGS_NONE			0UL
++#define BHV_MEM_FLAGS_TRANSIENT		(1UL << 0)
++#define BHV_MEM_FLAGS_MUTABLE		(1UL << 1)
++
++/* BHV VAS INTEGRITY BACKEND OPS */
++#define BHV_VAS_INTEGRITY_OP_CREATE_PHYS	0U
++#define BHV_VAS_INTEGRITY_OP_UPDATE_PHYS	1U
++#define BHV_VAS_INTEGRITY_OP_REMOVE_PHYS	2U
++#define BHV_VAS_INTEGRITY_OP_DISABLE		3U
++
++/*********************************************
++ * BHV memory region definitions
++ ********************************************/
++
++typedef struct {
++	uint64_t start_addr;
++	uint64_t size;
++	uint32_t type;
++	uint32_t pad;
++	uint64_t flags;
++	uint64_t next;
++} __attribute__((__packed__)) bhv_mem_region_create_t;
++
++typedef struct {
++	uint64_t start_addr;
++	uint32_t type;
++	uint32_t pad;
++	uint64_t flags;
++	uint64_t next;
++} __attribute__((__packed__)) bhv_mem_region_update_t;
++
++typedef struct {
++	uint64_t start_addr;
++	uint64_t next;
++} __attribute__((__packed__)) bhv_mem_region_remove_t;
++
++typedef struct {
++	union {
++		bhv_mem_region_create_t bhv_mem_region_create;
++		bhv_mem_region_update_t bhv_mem_region_update;
++		bhv_mem_region_remove_t bhv_mem_region_remove;
++	};
++} __attribute__((__packed__)) bhv_mem_region_t;
++
++/*********************************************
++ * BHV arg definitions
++ ********************************************/
++
++typedef struct {
++	uint64_t owner;
++	uint64_t region_head;
++} __attribute__((__packed__)) bhv_integrity_create_arg_t;
++
++typedef struct {
++	uint64_t region_head;
++} __attribute__((__packed__)) bhv_integrity_update_arg_t;
++
++typedef struct {
++	uint64_t rm_by_owner;
++	union {
++		uint64_t owner;
++		uint64_t region_head;
++	};
++} __attribute__((__packed__)) bhv_integrity_remove_arg_t;
++
++typedef struct {
++	union {
++		bhv_integrity_create_arg_t bhv_integrity_create_arg;
++		bhv_integrity_update_arg_t bhv_integrity_update_arg;
++		bhv_integrity_remove_arg_t bhv_integrity_remove_arg;
++	};
++} __attribute__((__packed__)) bhv_integrity_arg_t;
++
++#endif /* __BHV_INTERFACE_INTEGRITY_H__ */
+diff --git include/bhv/interface/patch.h include/bhv/interface/patch.h
+new file mode 100644
+index 000000000000..8c5374fe9b22
+--- /dev/null
++++ include/bhv/interface/patch.h
+@@ -0,0 +1,58 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_INTERFACE_PATCH_H__
++#define __BHV_INTERFACE_PATCH_H__
++
++#include <linux/types.h>
++
++/* BHV VAS PATCH BACKEND OPS */
++#define BHV_VAS_PATCH_OP_PATCH 0
++#define BHV_VAS_PATCH_OP_PATCH_NO_CLOSE 1
++
++#if defined(CONFIG_ARM64)
++#define BHV_MAX_INSN_SZ 4
++#elif defined(CONFIG_X86)
++#define BHV_MAX_INSN_SZ 15
++#else
++#define BHV_MAX_INSN_SZ 0
++#endif
++
++typedef struct {
++	uint64_t dest_phys_addr;
++	uint8_t src_value[BHV_MAX_INSN_SZ];
++	uint64_t size;
++} __attribute__((__packed__)) bhv_patch_patch_arg_t;
++
++typedef struct {
++	union {
++		bhv_patch_patch_arg_t bhv_patch_patch_arg;
++	};
++} __attribute__((__packed__)) bhv_patch_arg_t;
++
++#endif /* __BHV_INTERFACE_PATCH_H__ */
+diff --git include/bhv/interface/vault.h include/bhv/interface/vault.h
+new file mode 100644
+index 000000000000..df4d942b6502
+--- /dev/null
++++ include/bhv/interface/vault.h
+@@ -0,0 +1,36 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_INTERFACE_VAULT_H__
++#define __BHV_INTERFACE_VAULT_H__
++
++/* BHV VAS VAULT BACKEND OPS */
++#define BHV_VAS_VAULT_OP_OPEN	0
++#define BHV_VAS_VAULT_OP_CLOSE	1
++
++#endif /* __BHV_INTERFACE_VAULT_H__ */
+diff --git include/bhv/module.h include/bhv/module.h
+new file mode 100644
+index 000000000000..827ca2740313
+--- /dev/null
++++ include/bhv/module.h
+@@ -0,0 +1,68 @@
++/******************************************************************************
++ * Sergej Proskurin <sergej@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_MODULE_H__
++#define __BHV_MODULE_H__
++
++#ifdef CONFIG_BHV_VAS
++void bhv_module_load_prepare(const struct module *mod);
++void bhv_module_load_complete(const struct module *mod);
++void bhv_module_unload(const struct module *mod);
++
++void bhv_bpf_protect_ro(const void *base, uint64_t size);
++void bhv_bpf_protect_x(const void *base, uint64_t size);
++void bhv_bpf_unprotect(const void *base);
++#else /* CONFIG_BHV_VAS */
++
++static inline void bhv_module_load_prepare(const struct module *mod)
++{
++}
++
++static inline void bhv_module_load_complete(const struct module *mod)
++{
++}
++
++static inline void bhv_module_unload(const struct module *mod)
++{
++}
++
++static inline void bhv_bpf_protect_ro(const void *base, uint64_t size)
++{
++}
++
++static inline void bhv_bpf_protect_x(const void *base, uint64_t size)
++{
++}
++
++static inline void bhv_bpf_unprotect(const void *base)
++{
++}
++
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __BHV_MODULE_H__ */
+diff --git include/bhv/patch.h include/bhv/patch.h
+new file mode 100644
+index 000000000000..33da604b186f
+--- /dev/null
++++ include/bhv/patch.h
+@@ -0,0 +1,106 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_PATCH_H__
++#define __BHV_PATCH_H__
++
++#include <linux/slab.h>
++#include <linux/jump_label.h>
++#include <linux/module.h>
++
++#include <asm/bhv/patch.h>
++
++#ifdef CONFIG_BHV_VAS
++
++extern struct kmem_cache *bhv_patch_arg_cache;
++
++void __init bhv_patch_mm_init(void);
++
++#ifdef CONFIG_JUMP_LABEL
++int bhv_patch_jump_label(struct jump_entry *entry, const void *opcode,
++			 size_t len);
++int bhv_jump_label_add_module(struct module *mod);
++void bhv_jump_label_del_module(struct module *mod);
++#endif /* CONFIG_JUMP_LABEL */
++
++enum bhv_alternatives_mod_delete_policy {
++	BHV_ALTERNATIVES_DELETE_AFTER_PATCH = 0,
++	BHV_ALTERNATIVES_DELETE_AFTER_INIT,
++};
++
++struct bhv_alternatives_mod {
++	struct alt_instr *begin;
++	struct alt_instr *end;
++	enum bhv_alternatives_mod_delete_policy delete_policy;
++	bool allocated;
++	struct bhv_alternatives_mod_arch arch;
++	struct list_head next;
++};
++
++typedef bool (*bhv_alternatives_filter_t)(void *search_params,
++					  struct bhv_alternatives_mod *cur);
++
++int bhv_alternatives_apply(struct alt_instr *begin, struct alt_instr *end,
++			   void *arch);
++int bhv_alternatives_apply_custom_filter(void *search_param, void *arch,
++					 bhv_alternatives_filter_t filter);
++void bhv_alternatives_add_module(struct alt_instr *begin, struct alt_instr *end,
++				 struct bhv_alternatives_mod_arch *arch);
++void bhv_alternatives_delete_after_init(void);
++#else /* CONFIG_BHV_VAS */
++
++static inline void bhv_patch_mm_init(void)
++{
++}
++
++#ifdef CONFIG_JUMP_LABEL
++static inline int bhv_patch_jump_label(struct jump_entry *entry,
++				       const void *opcode, size_t len)
++{
++	return 0;
++}
++
++static inline int bhv_jump_label_add_module(struct module *mod)
++{
++	return 0;
++}
++
++static inline void bhv_jump_label_del_module(struct module *mod)
++{
++}
++#endif /* CONFIG_JUMP_LABEL */
++
++static inline void
++bhv_alternatives_add_module(struct alt_instr *begin, struct alt_instr *end,
++			    struct bhv_alternatives_mod_arch *arch)
++{
++}
++
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __BHV_PATCH_H__ */
+diff --git include/bhv/start.h include/bhv/start.h
+new file mode 100644
+index 000000000000..a9bdc3e7a6f1
+--- /dev/null
++++ include/bhv/start.h
+@@ -0,0 +1,49 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_START_H__
++#define __BHV_START_H__
++
++#ifdef CONFIG_BHV_VAS
++void __init bhv_init_platform(void);
++void bhv_start(void);
++int bhv_start_arch(void);
++#else /* CONFIG_BHV_VAS */
++static inline void bhv_init_platform(void)
++{
++}
++static inline void bhv_start(void)
++{
++}
++static inline int bhv_start_arch(void)
++{
++	return 0;
++}
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __BHV_START_H__ */
+\ No newline at end of file
+diff --git include/bhv/vault.h include/bhv/vault.h
+new file mode 100644
+index 000000000000..28094477b143
+--- /dev/null
++++ include/bhv/vault.h
+@@ -0,0 +1,65 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#ifndef __BHV_VAULT_H__
++#define __BHV_VAULT_H__
++
++#ifdef CONFIG_BHV_VAS
++#include <bhv/interface/common.h>
++#include <bhv/interface/hypercall.h>
++#include <bhv/interface/vault.h>
++#include <bhv/bhv.h>
++
++static __always_inline int bhv_vault_open_hyp(void)
++{
++	unsigned long r = bhv_hypercall_vas(BHV_VAS_BACKEND_VAULT,
++					    BHV_VAS_VAULT_OP_OPEN, NULL);
++	if (r)
++		return -EINVAL;
++
++	return 0;
++}
++
++static __always_inline void bhv_vault_close_hyp(void)
++{
++	unsigned long r = bhv_hypercall_vas(BHV_VAS_BACKEND_VAULT,
++					    BHV_VAS_VAULT_OP_CLOSE, NULL);
++	if (r)
++		panic("BHV vault close failure! hypercall returned %lu", r);
++}
++#else /* CONFIG_BHV_VAS */
++static inline int bhv_vault_open_hyp(void)
++{
++}
++
++static inline void bhv_vault_close_hyp(void)
++{
++}
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __BHV_VAULT_H__ */
+diff --git include/linux/filter.h include/linux/filter.h
+index 822b701c803d..c41d12d0b782 100644
+--- include/linux/filter.h
++++ include/linux/filter.h
+@@ -29,6 +29,8 @@
+ #include <uapi/linux/filter.h>
+ #include <uapi/linux/bpf.h>
+ 
++#include <bhv/module.h>
++
+ struct sk_buff;
+ struct sock;
+ struct seccomp_data;
+@@ -829,6 +831,7 @@ static inline void bpf_prog_lock_ro(struct bpf_prog *fp)
+ 	if (!fp->jited) {
+ 		set_vm_flush_reset_perms(fp);
+ 		set_memory_ro((unsigned long)fp, fp->pages);
++		bhv_bpf_protect_ro(fp, fp->pages << PAGE_SHIFT);
+ 	}
+ #endif
+ }
+@@ -838,6 +841,7 @@ static inline void bpf_jit_binary_lock_ro(struct bpf_binary_header *hdr)
+ 	set_vm_flush_reset_perms(hdr);
+ 	set_memory_ro((unsigned long)hdr, hdr->pages);
+ 	set_memory_x((unsigned long)hdr, hdr->pages);
++	bhv_bpf_protect_x(hdr, hdr->pages << PAGE_SHIFT);
+ }
+ 
+ static inline struct bpf_binary_header *
+@@ -875,6 +879,9 @@ void __bpf_prog_free(struct bpf_prog *fp);
+ 
+ static inline void bpf_prog_unlock_free(struct bpf_prog *fp)
+ {
++	if (!fp->jited)
++		bhv_bpf_unprotect(fp);
++
+ 	__bpf_prog_free(fp);
+ }
+ 
+diff --git init/main.c init/main.c
+index dd26a42e80a8..1f8bb76f7fc3 100644
+--- init/main.c
++++ init/main.c
+@@ -110,6 +110,9 @@
+ 
+ #include <kunit/test.h>
+ 
++#include <bhv/bhv.h>
++#include <bhv/start.h>
++
+ static int kernel_init(void *);
+ 
+ extern void init_IRQ(void);
+@@ -838,6 +841,8 @@ static void __init mm_init(void)
+ 	init_espfix_bsp();
+ 	/* Should be run after espfix64 is set up. */
+ 	pti_init();
++
++	bhv_mm_init();
+ }
+ 
+ void __init __weak arch_call_rest_init(void)
+@@ -1414,6 +1419,7 @@ static int __ref kernel_init(void *unused)
+ 	kprobe_free_init_mem();
+ 	ftrace_free_init_mem();
+ 	kgdb_free_init_mem();
++	bhv_start();
+ 	free_initmem();
+ 	mark_readonly();
+ 
+diff --git kernel/Makefile kernel/Makefile
+index e7905bdf6e97..4c4454e8806a 100644
+--- kernel/Makefile
++++ kernel/Makefile
+@@ -47,6 +47,7 @@ obj-y += rcu/
+ obj-y += livepatch/
+ obj-y += dma/
+ obj-y += entry/
++obj-y += bhv/
+ 
+ obj-$(CONFIG_KCMP) += kcmp.o
+ obj-$(CONFIG_FREEZER) += freezer.o
+diff --git kernel/bhv/Kconfig kernel/bhv/Kconfig
+new file mode 100644
+index 000000000000..f53bd2dcba90
+--- /dev/null
++++ kernel/bhv/Kconfig
+@@ -0,0 +1,9 @@
++config BHV_PANIC_ON_FAIL
++	def_bool y
++	bool "BVH guest panics on Hypercall failure"
++	depends on BHV_VAS
++	help
++	  Say Y if you want the kernel to panic in the case a
++	  BRASS hypercall fails.  This will prevent the guest
++	  continuing execution if a security critical hypercall
++	  fails.
+diff --git kernel/bhv/Makefile kernel/bhv/Makefile
+new file mode 100644
+index 000000000000..f2827afb1c30
+--- /dev/null
++++ kernel/bhv/Makefile
+@@ -0,0 +1,12 @@
++# SPDX-License-Identifier: GPL-2.0
++
++obj-$(CONFIG_BHV_VAS)		:= bhv.o
++obj-$(CONFIG_BHV_VAS)		+= start.o
++obj-$(CONFIG_BHV_VAS)		+= init.o
++obj-$(CONFIG_BHV_VAS)		+= integrity.o
++obj-$(CONFIG_BHV_VAS)		+= patch.o
++ifeq ($(CONFIG_JUMP_LABEL),y)
++obj-$(CONFIG_BHV_VAS)		+= patch_jump_label.o
++endif
++obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
++obj-$(CONFIG_BHV_VAS)		+= module.o
+diff --git kernel/bhv/bhv.c kernel/bhv/bhv.c
+new file mode 100644
+index 000000000000..0a60f7872b17
+--- /dev/null
++++ kernel/bhv/bhv.c
+@@ -0,0 +1,34 @@
++/*
++ * Copyright (C) 2022, BedRock Systems, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
++ * NON INFRINGEMENT.  See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++#include <bhv/integrity.h>
++#include <bhv/patch.h>
++
++#include <bhv/bhv.h>
++
++void __init bhv_mm_init(void)
++{
++	bhv_integrity_mm_init();
++	bhv_patch_mm_init();
++}
++
++void bhv_init(void)
++{
++}
+\ No newline at end of file
+diff --git kernel/bhv/init.c kernel/bhv/init.c
+new file mode 100644
+index 000000000000..e8dd2d2a0703
+--- /dev/null
++++ kernel/bhv/init.c
+@@ -0,0 +1,186 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#include <asm/io.h>
++#include <asm/sections.h>
++
++#if defined CONFIG_X86_32 || defined CONFIG_X86_64 || defined CONFIG_X86_X32_ABI
++#include <asm/vdso.h>
++#endif
++
++#include <bhv/interface/common.h>
++#include <bhv/interface/hypercall.h>
++#include <bhv/interface/init.h>
++#include <bhv/interface/integrity.h>
++
++void bhv_init_init(void)
++{
++}
++
++int __init bhv_init_hyp(void *init_start, uint64_t init_size, void *text_start,
++			uint64_t text_size)
++{
++	unsigned long r;
++	bhv_mem_region_t *init_phys_mem_regions;
++	bhv_init_arg_t *init_arg;
++
++	void *bhv_data = __bhv_data_start;
++	uint64_t bhv_data_size = __bhv_data_end - __bhv_data_start;
++	void *bhv_text = __bhv_text_start;
++	uint64_t bhv_text_size = __bhv_text_end - __bhv_text_start;
++
++	// Counter for regions
++	unsigned int nr_regions = 2;
++	unsigned int region_counter = 0;
++
++#ifdef CONFIG_X86_64
++	nr_regions++;
++#endif /* CONFIG_X86_64 */
++
++#ifdef CONFIG_X86_X32_ABI
++	nr_regions++;
++#endif /* CONFIG_X86_X32_ABI */
++
++#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
++	nr_regions++;
++#endif /* CONFIG_X86_32 || CONFIG_X86_64 */
++
++	BUG_ON(((nr_regions * sizeof(bhv_mem_region_t)) +
++		sizeof(bhv_init_arg_t)) > bhv_data_size);
++
++	init_phys_mem_regions = bhv_data;
++
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.start_addr =
++		virt_to_phys(init_start);
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.size =
++		init_size;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.type =
++		BHV_MEM_TYPE_CODE_PATCHABLE;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.flags =
++		BHV_MEM_FLAGS_TRANSIENT;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.next =
++		virt_to_phys(&(init_phys_mem_regions[region_counter + 1]));
++	region_counter++;
++
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.start_addr =
++		virt_to_phys(text_start);
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.size =
++		text_size;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.type =
++		BHV_MEM_TYPE_CODE_PATCHABLE;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.flags =
++		BHV_MEM_FLAGS_NONE;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.next =
++		BHV_INVALID_PHYS_ADDR;
++
++#ifdef CONFIG_X86_64
++	// Update region counter
++	region_counter++;
++
++	// Update last region
++	init_phys_mem_regions[region_counter - 1].bhv_mem_region_create.next =
++		virt_to_phys(&(init_phys_mem_regions[region_counter]));
++
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.start_addr =
++		virt_to_phys(vdso_image_64.data);
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.size =
++		vdso_image_64.size;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.type =
++		BHV_MEM_TYPE_CODE_PATCHABLE;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.flags =
++		BHV_MEM_FLAGS_TRANSIENT;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.next =
++		BHV_INVALID_PHYS_ADDR;
++#endif /* CONFIG_X86_64 */
++
++#ifdef CONFIG_X86_X32_ABI
++	// Update region counter
++	region_counter++;
++
++	// Update last region
++	init_phys_mem_regions[region_counter - 1].bhv_mem_region_create.next =
++		virt_to_phys(&(init_phys_mem_regions[region_counter]));
++
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.start_addr =
++		virt_to_phys(vdso_image_x32.data);
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.size =
++		vdso_image_x32.size;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.type =
++		BHV_MEM_TYPE_CODE_PATCHABLE;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.flags =
++		BHV_MEM_FLAGS_TRANSIENT;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.next =
++		BHV_INVALID_PHYS_ADDR;
++#endif /* CONFIG_X86_X32_ABI */
++
++#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
++	// Update region counter
++	region_counter++;
++
++	// Update last region
++	init_phys_mem_regions[region_counter - 1].bhv_mem_region_create.next =
++		virt_to_phys(&(init_phys_mem_regions[region_counter]));
++
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.start_addr =
++		virt_to_phys(vdso_image_32.data);
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.size =
++		vdso_image_32.size;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.type =
++		BHV_MEM_TYPE_CODE_PATCHABLE;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.flags =
++		BHV_MEM_FLAGS_TRANSIENT;
++	init_phys_mem_regions[region_counter].bhv_mem_region_create.next =
++		BHV_INVALID_PHYS_ADDR;
++#endif /* CONFIG_X86_32 || CONFIG_X86_64 */
++
++	// Set size of init args
++	init_arg = bhv_data + (nr_regions * sizeof(bhv_mem_region_t));
++
++	init_arg->bhv_init_init_arg.bhv_data_start = virt_to_phys(bhv_data);
++	init_arg->bhv_init_init_arg.bhv_data_size = bhv_data_size;
++	init_arg->bhv_init_init_arg.bhv_text_start = virt_to_phys(bhv_text);
++	init_arg->bhv_init_init_arg.bhv_text_size = bhv_text_size;
++	init_arg->bhv_init_init_arg.owner = 0;
++	init_arg->bhv_init_init_arg.region_head =
++		virt_to_phys(init_phys_mem_regions);
++
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_INIT, BHV_VAS_INIT_OP_INIT,
++			      init_arg);
++	if (r)
++		return -EINVAL;
++	return 0;
++}
++
++int bhv_start_hyp(void)
++{
++	unsigned long r = bhv_hypercall_vas(BHV_VAS_BACKEND_INIT,
++					    BHV_VAS_INIT_OP_START, NULL);
++	if (r)
++		return -EINVAL;
++	return 0;
++}
+diff --git kernel/bhv/integrity.c kernel/bhv/integrity.c
+new file mode 100644
+index 000000000000..e138656031ac
+--- /dev/null
++++ kernel/bhv/integrity.c
+@@ -0,0 +1,152 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#include <linux/types.h>
++#include <asm/io.h>
++
++#include <bhv/bhv.h>
++#include <bhv/interface/hypercall.h>
++
++#include <bhv/integrity.h>
++
++struct kmem_cache *bhv_mem_region_cache;
++struct kmem_cache *bhv_integrity_arg_cache;
++
++void __init bhv_integrity_mm_init(void)
++{
++	bhv_mem_region_cache = kmem_cache_create(
++		"bhv_mem_region_cache", sizeof(bhv_mem_region_node_t), 0,
++		SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
++
++	bhv_integrity_arg_cache = kmem_cache_create(
++		"bhv_integrity_arg_cache", sizeof(bhv_integrity_arg_t), 0,
++		SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
++}
++
++int bhv_integrity_disable_events(void)
++{
++	unsigned long ret = bhv_hypercall_vas(
++		BHV_VAS_BACKEND_INTEGRITY, BHV_VAS_INTEGRITY_OP_DISABLE, NULL);
++
++	return (ret) ? -EINVAL : 0;
++}
++
++int bhv_create_kern_phys_mem_region_hyp(uint64_t owner,
++					bhv_mem_region_t *region_head)
++{
++	int rv = 0;
++	unsigned long r;
++	bhv_integrity_arg_t *bhv_arg =
++		kmem_cache_alloc(bhv_integrity_arg_cache, GFP_KERNEL);
++	if (!bhv_arg) {
++		bhv_fail("BHV: failed to allocate arg.");
++		return -ENOMEM;
++	}
++
++	bhv_arg->bhv_integrity_create_arg.owner = owner;
++	bhv_arg->bhv_integrity_create_arg.region_head =
++		virt_to_phys(region_head);
++
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_INTEGRITY,
++			      BHV_VAS_INTEGRITY_OP_CREATE_PHYS, bhv_arg);
++	if (r)
++		rv = -EINVAL;
++
++	kmem_cache_free(bhv_integrity_arg_cache, bhv_arg);
++	return rv;
++}
++
++int bhv_update_kern_phys_mem_region_hyp(bhv_mem_region_t *region_head)
++{
++	int rv = 0;
++	unsigned long r;
++	bhv_integrity_arg_t *bhv_arg =
++		kmem_cache_alloc(bhv_integrity_arg_cache, GFP_KERNEL);
++	if (!bhv_arg) {
++		bhv_fail("BHV: failed to allocate arg.");
++		return -ENOMEM;
++	}
++
++	bhv_arg->bhv_integrity_update_arg.region_head =
++		virt_to_phys(region_head);
++
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_INTEGRITY,
++			      BHV_VAS_INTEGRITY_OP_UPDATE_PHYS, bhv_arg);
++	if (r)
++		rv = -EINVAL;
++
++	kmem_cache_free(bhv_integrity_arg_cache, bhv_arg);
++	return rv;
++}
++
++int bhv_remove_kern_phys_mem_region_by_region_hyp(bhv_mem_region_t *region_head)
++{
++	int rv = 0;
++	unsigned long r;
++	bhv_integrity_arg_t *bhv_arg =
++		kmem_cache_alloc(bhv_integrity_arg_cache, GFP_KERNEL);
++	if (!bhv_arg) {
++		bhv_fail("BHV: failed to allocate arg.");
++		return -ENOMEM;
++	}
++
++	bhv_arg->bhv_integrity_remove_arg.rm_by_owner = 0;
++	bhv_arg->bhv_integrity_remove_arg.region_head =
++		virt_to_phys(region_head);
++
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_INTEGRITY,
++			      BHV_VAS_INTEGRITY_OP_REMOVE_PHYS, bhv_arg);
++	if (r)
++		rv = -EINVAL;
++
++	kmem_cache_free(bhv_integrity_arg_cache, bhv_arg);
++	return rv;
++}
++
++int bhv_remove_kern_phys_mem_region_by_owner_hyp(uint64_t owner)
++{
++	int rv = 0;
++	unsigned long r;
++	bhv_integrity_arg_t *bhv_arg =
++		kmem_cache_alloc(bhv_integrity_arg_cache, GFP_KERNEL);
++	if (!bhv_arg) {
++		bhv_fail("BHV: failed to allocate arg.");
++		return -ENOMEM;
++	}
++
++	bhv_arg->bhv_integrity_remove_arg.rm_by_owner = 1;
++	bhv_arg->bhv_integrity_remove_arg.owner = owner;
++
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_INTEGRITY,
++			      BHV_VAS_INTEGRITY_OP_REMOVE_PHYS, bhv_arg);
++	if (r)
++		rv = -EINVAL;
++
++	kmem_cache_free(bhv_integrity_arg_cache, bhv_arg);
++	return rv;
++}
+diff --git kernel/bhv/module.c kernel/bhv/module.c
+new file mode 100644
+index 000000000000..091f5f61f6a3
+--- /dev/null
++++ kernel/bhv/module.c
+@@ -0,0 +1,459 @@
++#include <linux/module.h>
++#include <linux/mm.h>
++#include <linux/kernel.h>
++#include <linux/list.h>
++
++#include <asm/io.h>
++
++#include <bhv/integrity.h>
++#include <bhv/interface/common.h>
++
++typedef void (*bhv_link_node_cb_t)(struct list_head *head,
++				   struct bhv_mem_region_node *n, uint64_t pfn,
++				   uint64_t size, uint32_t type,
++				   uint64_t flags);
++
++static void bhv_link_node_op_create(struct list_head *head,
++				    struct bhv_mem_region_node *n, uint64_t pfn,
++				    uint64_t size, uint32_t type,
++				    uint64_t flags)
++{
++	n->region.bhv_mem_region_create.start_addr = pfn << PAGE_SHIFT;
++	n->region.bhv_mem_region_create.size = size;
++	n->region.bhv_mem_region_create.type = type;
++	n->region.bhv_mem_region_create.flags = flags;
++	n->region.bhv_mem_region_create.next = BHV_INVALID_PHYS_ADDR;
++
++	/*
++	 * XXX: Consider moving the field 'next' out of the union in
++	 * bhv_mem_region_t. This will allow to move the remaining
++	 * list-maintenance operations into the calling function.
++	 */
++
++	if (!list_empty(head)) {
++		struct bhv_mem_region_node *tail =
++			list_last_entry(head, struct bhv_mem_region_node, list);
++		tail->region.bhv_mem_region_create.next =
++			virt_to_phys(&n->region);
++	}
++
++	list_add_tail(&n->list, head);
++}
++
++static void bhv_link_node_op_update(struct list_head *head,
++				    struct bhv_mem_region_node *n, uint64_t pfn,
++				    uint64_t unused, uint32_t type,
++				    uint64_t flags)
++{
++	n->region.bhv_mem_region_update.start_addr = pfn << PAGE_SHIFT;
++	n->region.bhv_mem_region_update.type = type;
++	n->region.bhv_mem_region_update.flags = flags;
++	n->region.bhv_mem_region_update.next = BHV_INVALID_PHYS_ADDR;
++
++	/*
++	 * XXX: Consider moving the field 'next' out of the union in
++	 * bhv_mem_region_t. This will allow to move the remaining
++	 * list-maintenance operations into the calling function.
++	 */
++
++	if (!list_empty(head)) {
++		struct bhv_mem_region_node *tail =
++			list_last_entry(head, struct bhv_mem_region_node, list);
++		tail->region.bhv_mem_region_update.next =
++			virt_to_phys(&n->region);
++	}
++
++	list_add_tail(&n->list, head);
++}
++
++static void bhv_link_node_op_remove(struct list_head *head,
++				    struct bhv_mem_region_node *n, uint64_t pfn,
++				    uint64_t unused1, uint32_t unused2,
++				    uint64_t unused3)
++{
++	n->region.bhv_mem_region_remove.start_addr = pfn << PAGE_SHIFT;
++	n->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
++
++	/*
++	 * XXX: Consider moving the field 'next' out of the union in
++	 * bhv_mem_region_t. This will allow to move the remaining
++	 * list-maintenance operations into the calling function.
++	 */
++
++	if (!list_empty(head)) {
++		struct bhv_mem_region_node *tail =
++			list_last_entry(head, struct bhv_mem_region_node, list);
++		tail->region.bhv_mem_region_remove.next =
++			virt_to_phys(&n->region);
++	}
++
++	list_add_tail(&n->list, head);
++}
++
++static void bhv_prepare_mod_section(struct list_head *head, const void *base,
++				    uint64_t size, uint32_t type,
++				    uint64_t flags,
++				    bhv_link_node_cb_t link_node_cb)
++{
++	uint64_t i = 0;
++	uint64_t nr_pages = 0;
++	uint64_t pfn = 0;
++	uint64_t pfn_count_consecutive = 0;
++	struct bhv_mem_region_node *n = NULL;
++
++	BUG_ON(!PAGE_ALIGNED(base));
++	BUG_ON(!PAGE_ALIGNED(size));
++
++	if (base == NULL || size == 0)
++		return;
++
++	/* This is ok, because size is always a number of pages. */
++	nr_pages = (((uint64_t)base + size) - (uint64_t)base) >> PAGE_SHIFT;
++
++	for (i = 0; i < nr_pages; ++i) {
++		struct page *p = NULL;
++		uint64_t size_consecutive = 0;
++
++		p = vmalloc_to_page(base + (i << PAGE_SHIFT));
++		if (p == NULL) {
++			pr_err("%s: Cannot translate addr @ 0x%llx",
++			       __FUNCTION__,
++			       (uint64_t)(base + (i << PAGE_SHIFT)));
++			return;
++		}
++
++		if (pfn_count_consecutive == 0) {
++			pfn = page_to_pfn(p);
++			pfn_count_consecutive++;
++			continue;
++		}
++
++		if ((page_to_pfn(p) - pfn) == pfn_count_consecutive) {
++			pfn_count_consecutive++;
++			continue;
++		}
++
++		/* We have found a physically non-contiguous section. */
++
++		if ((pfn_count_consecutive << PAGE_SHIFT) > size)
++			size_consecutive = size;
++		else
++			size_consecutive = pfn_count_consecutive << PAGE_SHIFT;
++
++		n = kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
++		if (n == NULL) {
++			pr_err("%s: failed to allocate mem region",
++			       __FUNCTION__);
++			return;
++		}
++
++		link_node_cb(head, n, pfn, size_consecutive, type, flags);
++
++		pfn = page_to_pfn(p);
++		pfn_count_consecutive = 1;
++		size -= size_consecutive;
++	}
++
++	n = kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
++	if (n == NULL) {
++		pr_err("%s: failed to allocate mem region", __FUNCTION__);
++		return;
++	}
++
++	link_node_cb(head, n, pfn, size, type, flags);
++}
++
++static void bhv_create_section(struct list_head *head, const void *base,
++			       uint64_t size, uint32_t type, uint64_t flags)
++{
++	if (type == BHV_MEM_TYPE_UNKNOWN)
++		return;
++
++	bhv_prepare_mod_section(head, base, size, type, flags,
++				bhv_link_node_op_create);
++}
++
++static void bhv_update_section(struct list_head *head, const void *base,
++			       uint64_t size, uint32_t type, uint64_t flags)
++{
++	if (type == BHV_MEM_TYPE_UNKNOWN)
++		return;
++
++	type &= ~BHV_MEM_FLAGS_MUTABLE;
++
++	bhv_prepare_mod_section(head, base, size, type, flags,
++				bhv_link_node_op_update);
++}
++
++static void bhv_remove_section(struct list_head *head, const void *base,
++			       uint64_t size)
++{
++	bhv_prepare_mod_section(head, base, size, BHV_MEM_TYPE_UNKNOWN,
++				BHV_MEM_FLAGS_NONE, bhv_link_node_op_remove);
++}
++
++static void bhv_prepare_mod_layout(struct list_head *head,
++				   const struct module_layout *layout)
++{
++	if (layout->size == 0)
++		return;
++
++	/* Prepare the module region's .text section. */
++	bhv_create_section(head, layout->base, layout->text_size,
++			   BHV_MEM_TYPE_CODE, BHV_MEM_FLAGS_TRANSIENT);
++
++	/* Prepare the module region's .rodata section. */
++	if (layout->ro_size - layout->text_size) {
++		bhv_create_section(head, (layout->base + layout->text_size),
++				   (layout->ro_size - layout->text_size),
++				   BHV_MEM_TYPE_DATA_READ_ONLY,
++				   BHV_MEM_FLAGS_TRANSIENT);
++	}
++
++	/* Prepare the module region's .ro_after_init section. */
++	if (layout->ro_after_init_size - layout->ro_size) {
++		bhv_create_section(
++			head, (layout->base + layout->ro_size),
++			(layout->ro_after_init_size - layout->ro_size),
++			BHV_MEM_TYPE_DATA,
++			BHV_MEM_FLAGS_TRANSIENT | BHV_MEM_FLAGS_MUTABLE);
++	}
++
++	/* Prepare the module region's .data section. */
++	if (layout->size - layout->ro_after_init_size) {
++		bhv_create_section(head,
++				   (layout->base + layout->ro_after_init_size),
++				   (layout->size - layout->ro_after_init_size),
++				   BHV_MEM_TYPE_DATA, BHV_MEM_FLAGS_TRANSIENT);
++	}
++}
++
++static void bhv_prepare_mod(struct list_head *head, const struct module *mod)
++{
++	bhv_prepare_mod_layout(head, &mod->init_layout);
++	bhv_prepare_mod_layout(head, &mod->core_layout);
++}
++
++static void bhv_release_arg_list(struct list_head *head)
++{
++	struct bhv_mem_region_node *entry, *tmp;
++	list_for_each_entry_safe (entry, tmp, head, list)
++		kmem_cache_free(bhv_mem_region_cache, entry);
++}
++
++void bhv_module_load_prepare(const struct module *mod)
++{
++	int rc = 0;
++	uint64_t owner = (uint64_t)mod;
++	struct bhv_mem_region_node *n = NULL;
++
++	/*
++	 * Note: list operations do not require locking, because the scope of
++	 * the list is limited to the function call; parallel calls to this
++	 * function will create their own lists.
++	 */
++	LIST_HEAD(bhv_region_list_head);
++
++	/*
++	 * XXX: Check whether the addresses are part of the region
++	 * [module_alloc_base;module_alloc_end]
++	 */
++
++	bhv_prepare_mod(&bhv_region_list_head, mod);
++
++	if (list_empty(&bhv_region_list_head))
++		return;
++
++	n = list_first_entry_or_null(&bhv_region_list_head,
++				     struct bhv_mem_region_node, list);
++	if (n == NULL)
++		goto err;
++
++	/*
++	 * XXX: Consider using either the owner or an additional identifier for
++	 * page frames that belong to a given memory layout region. This would
++	 * allow us to efficiently release the respective memory regions.
++	 */
++	rc = bhv_create_kern_phys_mem_region_hyp(owner, &n->region);
++	if (rc) {
++		pr_err("%s: Cannot protect the module's memory regions",
++		       __FUNCTION__);
++		goto err;
++	}
++
++	bhv_release_arg_list(&bhv_region_list_head);
++
++	return;
++
++err:
++	bhv_release_arg_list(&bhv_region_list_head);
++	bhv_remove_kern_phys_mem_region_by_owner_hyp(owner);
++}
++
++static void bhv_complete_free_init(const struct module_layout *layout)
++{
++	int rc = 0;
++	struct bhv_mem_region_node *n = NULL;
++
++	LIST_HEAD(bhv_region_list_head);
++
++	if (layout->size == 0)
++		return;
++
++	/* Prepare the module region's .text section. */
++	bhv_remove_section(&bhv_region_list_head, layout->base,
++			   layout->text_size);
++
++	/* Prepare the module region's .rodata section. */
++	if (layout->ro_size - layout->text_size) {
++		bhv_remove_section(&bhv_region_list_head,
++				   (layout->base + layout->text_size),
++				   (layout->ro_size - layout->text_size));
++	}
++
++	/* Prepare the module region's .ro_after_init section. */
++	if (layout->ro_after_init_size - layout->ro_size) {
++		bhv_remove_section(
++			&bhv_region_list_head, (layout->base + layout->ro_size),
++			(layout->ro_after_init_size - layout->ro_size));
++	}
++
++	/* Prepare the module region's .data section. */
++	if (layout->size - layout->ro_after_init_size) {
++		bhv_remove_section(&bhv_region_list_head,
++				   (layout->base + layout->ro_after_init_size),
++				   (layout->size - layout->ro_after_init_size));
++	}
++
++	if (list_empty(&bhv_region_list_head))
++		return;
++
++	n = list_first_entry_or_null(&bhv_region_list_head,
++				     struct bhv_mem_region_node, list);
++	if (n == NULL)
++		return;
++
++	rc = bhv_remove_kern_phys_mem_region_by_region_hyp(&n->region);
++	if (rc) {
++		/* XXX: Determine a strategy for failed update attempts. */
++		pr_err("%s: Cannot remove the module's memory regions",
++		       __FUNCTION__);
++	}
++
++	bhv_release_arg_list(&bhv_region_list_head);
++}
++
++static void bhv_update_ro_after_init(const struct module *mod)
++{
++	int rc = 0;
++	struct bhv_mem_region_node *n = NULL;
++
++	void *base = mod->core_layout.base + mod->core_layout.ro_size;
++	unsigned int size =
++		mod->core_layout.ro_after_init_size - mod->core_layout.ro_size;
++
++	LIST_HEAD(bhv_region_list_head);
++
++	if (size == 0) {
++		return;
++	}
++
++	bhv_update_section(&bhv_region_list_head, base, size,
++			   BHV_MEM_TYPE_DATA_READ_ONLY,
++			   BHV_MEM_FLAGS_TRANSIENT);
++
++	if (list_empty(&bhv_region_list_head))
++		return;
++
++	n = list_first_entry_or_null(&bhv_region_list_head,
++				     struct bhv_mem_region_node, list);
++	if (n == NULL)
++		return;
++
++	rc = bhv_update_kern_phys_mem_region_hyp(&n->region);
++	if (rc) {
++		/* XXX: Determine a strategy for failed update attempts. */
++		pr_err("%s: Cannot update the module's memory regions",
++		       __FUNCTION__);
++	}
++
++	bhv_release_arg_list(&bhv_region_list_head);
++}
++
++void bhv_module_load_complete(const struct module *mod)
++{
++	bhv_update_ro_after_init(mod);
++	bhv_complete_free_init(&mod->init_layout);
++}
++
++static void bhv_release_memory_by_owner(uint64_t owner)
++{
++	int rc = bhv_remove_kern_phys_mem_region_by_owner_hyp(owner);
++	if (rc) {
++		pr_err("%s: Cannot remove the module's memory regions",
++		       __FUNCTION__);
++	}
++}
++
++void bhv_module_unload(const struct module *mod)
++{
++	bhv_release_memory_by_owner((uint64_t)mod);
++}
++
++static void bhv_bpf_protect(const void *base, uint64_t size, uint32_t type,
++			    uint64_t flags)
++{
++	int rc = 0;
++
++	/*
++	 * XXX: Note that we currently do not group subprograms of a BPF
++	 * program. Instead we protect them individually. Consider changing this
++	 * in the future.
++	 */
++	uint64_t owner = (uint64_t)base;
++	struct bhv_mem_region_node *n = NULL;
++
++	LIST_HEAD(bhv_section_list_head);
++
++	/* Prepare the section belonging to the bpf (sub)program. */
++	bhv_create_section(&bhv_section_list_head, base, size, type, flags);
++
++	if (list_empty(&bhv_section_list_head))
++		return;
++
++	n = list_first_entry_or_null(&bhv_section_list_head,
++				     struct bhv_mem_region_node, list);
++	if (n == NULL)
++		goto err;
++
++	rc = bhv_create_kern_phys_mem_region_hyp(owner, &n->region);
++	if (rc) {
++		pr_err("%s: Cannot protect the module's memory regions",
++		       __FUNCTION__);
++		goto err;
++	}
++
++	bhv_release_arg_list(&bhv_section_list_head);
++
++	return;
++
++err:
++	bhv_release_arg_list(&bhv_section_list_head);
++	bhv_remove_kern_phys_mem_region_by_owner_hyp(owner);
++}
++
++void bhv_bpf_protect_ro(const void *base, uint64_t size)
++{
++	bhv_bpf_protect(base, size, BHV_MEM_TYPE_DATA_READ_ONLY,
++			BHV_MEM_FLAGS_TRANSIENT);
++}
++
++void bhv_bpf_protect_x(const void *base, uint64_t size)
++{
++	bhv_bpf_protect(base, size, BHV_MEM_TYPE_CODE, BHV_MEM_FLAGS_TRANSIENT);
++}
++
++void bhv_bpf_unprotect(const void *base)
++{
++	bhv_release_memory_by_owner((uint64_t)base);
++}
+diff --git kernel/bhv/patch.c kernel/bhv/patch.c
+new file mode 100644
+index 000000000000..860d771de761
+--- /dev/null
++++ kernel/bhv/patch.c
+@@ -0,0 +1,39 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#include <bhv/interface/patch.h>
++#include <bhv/patch.h>
++
++struct kmem_cache *bhv_patch_arg_cache = NULL;
++
++void __init bhv_patch_mm_init(void)
++{
++	bhv_patch_arg_cache = kmem_cache_create(
++		"bhv_patch_arg_cache", sizeof(bhv_patch_arg_t), 0,
++		SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
++}
+diff --git kernel/bhv/patch_alternative.c kernel/bhv/patch_alternative.c
+new file mode 100644
+index 000000000000..a307788a9650
+--- /dev/null
++++ kernel/bhv/patch_alternative.c
+@@ -0,0 +1,195 @@
++/******************************************************************************
++ * Sebastian Vogl <sebastian@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++#include <bhv/bhv.h>
++#include <bhv/vault.h>
++#include <bhv/patch.h>
++#include <bhv/interface/patch.h>
++
++#include <asm/bhv/patch.h>
++
++static DEFINE_MUTEX(bhv_alternatives_mutex);
++static LIST_HEAD(bhv_alternatives_head);
++
++static void __always_inline bhv_alternatives_lock(void)
++{
++	mutex_lock(&bhv_alternatives_mutex);
++}
++
++static void __always_inline bhv_alternatives_unlock(void)
++{
++	mutex_unlock(&bhv_alternatives_mutex);
++}
++
++void bhv_alternatives_add_module(struct alt_instr *begin, struct alt_instr *end,
++				 struct bhv_alternatives_mod_arch *arch)
++{
++	struct bhv_alternatives_mod *n;
++
++	n = kzalloc(sizeof(struct bhv_alternatives_mod), GFP_KERNEL);
++	if (!n) {
++		bhv_fail("No memory left!");
++		return;
++	}
++
++	n->begin = begin;
++	n->end = end;
++	n->delete_policy = BHV_ALTERNATIVES_DELETE_AFTER_PATCH;
++	n->allocated = true;
++	memcpy(&n->arch, arch, sizeof(n->arch));
++
++	bhv_alternatives_lock();
++	list_add(&(n->next), &bhv_alternatives_head);
++	bhv_alternatives_unlock();
++}
++
++void bhv_alternatives_delete_after_init(void)
++{
++	struct bhv_alternatives_mod *i, *tmp;
++
++	bhv_alternatives_lock();
++	list_for_each_entry_safe (i, tmp, &bhv_alternatives_head, next) {
++		if (i->delete_policy == BHV_ALTERNATIVES_DELETE_AFTER_INIT) {
++			list_del(&(i->next));
++			if (i->allocated) {
++				kfree(i);
++			}
++		}
++	}
++	bhv_alternatives_unlock();
++}
++
++// LOCK MUST BE HELD!
++static void __bhv_text
++bhv_alternatives_add_module_no_alloc(struct bhv_alternatives_mod *n)
++{
++	n->allocated = false;
++	list_add(&(n->next), &bhv_alternatives_head);
++}
++
++static void __bhv_text bhv_alternatives_init(void)
++{
++	uint32_t static_mods, i;
++	struct bhv_alternatives_mod *n =
++		bhv_alternatives_get_static_mods_vault(&static_mods);
++
++	for (i = 0; i < static_mods; i++)
++		bhv_alternatives_add_module_no_alloc(&n[i]);
++}
++
++static int __bhv_text bhv_alternatives_apply_vault(
++	void *search_param, void *arch, bhv_alternatives_filter_t filter,
++	bhv_patch_arg_t *arg)
++{
++	static bool initialized = false;
++
++	struct bhv_alternatives_mod *i, *tmp, *found;
++	int rv;
++
++	rv = bhv_vault_open_hyp();
++	if (rv) {
++		return rv;
++	}
++
++	if (!initialized) {
++		bhv_alternatives_init();
++		initialized = true;
++	}
++
++	found = NULL;
++	list_for_each_entry_safe (i, tmp, &bhv_alternatives_head, next) {
++		if (filter(search_param, i)) {
++			found = i;
++			break;
++		}
++	}
++
++	// Unknown module.
++	if (found == NULL) {
++		bhv_vault_close_hyp();
++		return -EACCES;
++	}
++
++	rv = bhv_alternatives_apply_vault_arch(found, arch, arg);
++
++	// Delete module. Only one patch allowed.
++	if (found->delete_policy == BHV_ALTERNATIVES_DELETE_AFTER_PATCH) {
++		list_del(&(found->next));
++		if (found->allocated) {
++			kfree(found);
++		}
++	}
++
++	// Close vault.
++	bhv_vault_close_hyp();
++
++	return rv;
++}
++
++struct alt_inst_search {
++	struct alt_instr *begin;
++	struct alt_instr *end;
++};
++static bool __bhv_text bhv_alternatives_find_by_alt(
++	void *search_param, struct bhv_alternatives_mod *cur)
++{
++	struct alt_inst_search *param = search_param;
++
++	if (cur->begin == param->begin && cur->end == param->end) {
++		return true;
++	}
++
++	return false;
++}
++
++int bhv_alternatives_apply(struct alt_instr *begin, struct alt_instr *end,
++			   void *arch)
++{
++	int rv = 0;
++	static bhv_patch_arg_t bhv_arg;
++	struct alt_inst_search search = { .begin = begin, .end = end };
++
++	bhv_alternatives_lock();
++	rv = bhv_alternatives_apply_vault(
++		&search, arch, bhv_alternatives_find_by_alt, &bhv_arg);
++	bhv_alternatives_unlock();
++
++	return rv;
++}
++
++int bhv_alternatives_apply_custom_filter(void *search_param, void *arch,
++					 bhv_alternatives_filter_t filter)
++{
++	int rv = 0;
++	static bhv_patch_arg_t bhv_arg;
++
++	bhv_alternatives_lock();
++	rv = bhv_alternatives_apply_vault(search_param, arch, filter, &bhv_arg);
++	bhv_alternatives_unlock();
++
++	return rv;
++}
+\ No newline at end of file
+diff --git kernel/bhv/patch_jump_label.c kernel/bhv/patch_jump_label.c
+new file mode 100644
+index 000000000000..9106618303ae
+--- /dev/null
++++ kernel/bhv/patch_jump_label.c
+@@ -0,0 +1,171 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++#include <linux/jump_label.h>
++#include <linux/module.h>
++#include <asm/bhv/patch.h>
++#include <bhv/interface/patch.h>
++#include <bhv/patch.h>
++#include <bhv/vault.h>
++
++static DEFINE_MUTEX(bhv_jump_label_mutex);
++static LIST_HEAD(bhv_static_key_mod_head);
++
++struct bhv_static_key_mod {
++	struct jump_entry *entries_start;
++	struct jump_entry *entries_stop;
++	struct module *mod;
++	struct list_head list;
++};
++
++static void __always_inline bhv_jump_label_lock(void)
++{
++	mutex_lock(&bhv_jump_label_mutex);
++}
++
++static void __always_inline bhv_jump_label_unlock(void)
++{
++	mutex_unlock(&bhv_jump_label_mutex);
++}
++
++int bhv_jump_label_add_module(struct module *mod)
++{
++	struct bhv_static_key_mod *n;
++
++	n = kzalloc(sizeof(struct bhv_static_key_mod), GFP_KERNEL);
++	if (!n)
++		return -ENOMEM;
++
++	n->entries_start = mod->jump_entries;
++	n->entries_stop = mod->jump_entries + mod->num_jump_entries;
++	n->mod = mod;
++
++	bhv_jump_label_lock();
++	list_add(&(n->list), &bhv_static_key_mod_head);
++	bhv_jump_label_unlock();
++
++	return 0;
++}
++
++void bhv_jump_label_del_module(struct module *mod)
++{
++	struct bhv_static_key_mod *i, *tmp;
++
++	bhv_jump_label_lock();
++	list_for_each_entry_safe (i, tmp, &bhv_static_key_mod_head, list) {
++		if (i->mod == mod)
++			list_del(&(i->list));
++	}
++	bhv_jump_label_unlock();
++}
++
++enum jump_label_type __bhv_text bhv_jump_label_type(struct jump_entry *entry)
++{
++	struct static_key *key = jump_entry_key(entry);
++	bool enabled = static_key_enabled(key);
++	bool branch = jump_entry_is_branch(entry);
++
++	/* See the comment in linux/jump_label.h */
++	return enabled ^ branch;
++}
++
++bool __bhv_text validate_jmp_labels(struct jump_entry *entry,
++				    const void *opcode, size_t len)
++{
++	struct bhv_static_key_mod *i;
++
++	if (entry >= __start___jump_table && entry < __stop___jump_table) {
++		return bhv_jump_label_validate_opcode(
++			entry, bhv_jump_label_type(entry), opcode, len);
++	}
++
++	list_for_each_entry (i, &bhv_static_key_mod_head, list) {
++		if (entry >= i->entries_start && entry < i->entries_stop)
++			return bhv_jump_label_validate_opcode(
++				entry, bhv_jump_label_type(entry), opcode, len);
++	}
++
++	return false;
++}
++
++int __bhv_text bhv_vault_patch_jump_label(struct jump_entry *entry,
++					  const void *opcode, size_t len,
++					  bhv_patch_arg_t *bhv_arg)
++{
++	int rv = 0;
++	unsigned long r;
++	bool validation_ok;
++
++	rv = bhv_vault_open_hyp();
++	if (rv) {
++		return rv;
++	}
++
++	if (len > BHV_MAX_INSN_SZ) {
++		bhv_vault_close_hyp();
++		return -E2BIG;
++	}
++
++	bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++		virt_to_phys((void *)jump_entry_code(entry));
++	memcpy(bhv_arg->bhv_patch_patch_arg.src_value, opcode, len);
++	bhv_arg->bhv_patch_patch_arg.size = (uint64_t)len;
++
++	validation_ok = validate_jmp_labels(
++		entry, bhv_arg->bhv_patch_patch_arg.src_value, len);
++	if (!validation_ok) {
++		bhv_vault_close_hyp();
++		return -EACCES;
++	}
++
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH, BHV_VAS_PATCH_OP_PATCH,
++			      bhv_arg);
++	if (r) {
++		panic("BHV vault close failure! hypercall returned %lu", r);
++	}
++	return 0;
++}
++
++int bhv_patch_jump_label(struct jump_entry *entry, const void *opcode,
++			 size_t len)
++{
++	int rv = 0;
++
++	bhv_patch_arg_t *bhv_arg =
++		kmem_cache_alloc(bhv_patch_arg_cache, GFP_KERNEL);
++	if (!bhv_arg) {
++		bhv_fail("BHV: failed to allocate arg.");
++		return -ENOMEM;
++	}
++
++	bhv_jump_label_lock();
++	rv = bhv_vault_patch_jump_label(entry, opcode, len, bhv_arg);
++	bhv_jump_label_unlock();
++
++	kmem_cache_free(bhv_patch_arg_cache, bhv_arg);
++	return rv;
++}
+diff --git kernel/bhv/start.c kernel/bhv/start.c
+new file mode 100644
+index 000000000000..b0af33d9b954
+--- /dev/null
++++ kernel/bhv/start.c
+@@ -0,0 +1,180 @@
++/*
++ * Copyright (C) 2022, BedRock Systems, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
++ * NON INFRINGEMENT.  See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++#include <asm/sections.h>
++#include <asm/page.h>
++#include <asm/io.h>
++
++#include <bhv/interface/common.h>
++#include <bhv/init.h>
++#include <bhv/integrity.h>
++
++#include <bhv/bhv.h>
++#include <bhv/start.h>
++#include <bhv/patch.h>
++
++#if defined CONFIG_X86_32 || defined CONFIG_X86_64 || defined CONFIG_X86_X32_ABI
++#include <asm/vdso.h>
++#endif
++
++bool bhv_initialized __ro_after_init = false;
++
++void __init bhv_init_platform(void)
++{
++	unsigned long rv = bhv_init_hyp(_sinittext, _einittext - _sinittext,
++					_stext, _etext - _stext);
++	if (rv) {
++		pr_err("BHV: init hypercall failed: hypercall returned %lu",
++		       rv);
++		return;
++	}
++	bhv_initialized = true;
++}
++
++void bhv_start(void)
++{
++	int rc;
++	bhv_mem_region_node_t *n;
++	bhv_mem_region_node_t *last;
++#ifdef CONFIG_X86_64
++	bhv_mem_region_node_t *vdso_64;
++#endif /* CONFIG_X86_64 */
++
++#ifdef CONFIG_X86_X32_ABI
++	bhv_mem_region_node_t *vdso_x32;
++#endif /* CONFIG_X86_X32_ABI */
++
++#if defined CONFIG_X86_32 || defined CONFIG_COMPAT
++	bhv_mem_region_node_t *vdso_32;
++#endif /* CONFIG_X86_32 || CONFIG_X86_64 */
++
++	if (!bhv_initialized)
++		return;
++
++	bhv_init();
++
++	n = kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
++	if (!n) {
++		bhv_fail("BHV: failed to allocate mem region");
++		return;
++	}
++
++	/* Remove init text from host mappings */
++	n->region.bhv_mem_region_remove.start_addr =
++		virt_to_phys(_sinittext);
++	n->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
++	last = n;
++
++	/* Remove VDSO on x86 as it is located in rodata. */
++#ifdef CONFIG_X86_64
++	vdso_64 = kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
++	if (!vdso_64) {
++		bhv_fail("BHV: failed to allocate mem region");
++		return;
++	}
++	vdso_64->region.bhv_mem_region_remove.start_addr =
++		virt_to_phys(vdso_image_64.data);
++	vdso_64->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
++	last->region.bhv_mem_region_remove.next =
++		virt_to_phys(&vdso_64->region);
++	last = vdso_64;
++#endif /* CONFIG_X86_64 */
++
++#ifdef CONFIG_X86_X32_ABI
++	vdso_x32 = kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
++	if (!vdso_x32) {
++		bhv_fail("BHV: failed to allocate mem region");
++		return;
++	}
++	vdso_x32->region.bhv_mem_region_remove.start_addr =
++		virt_to_phys(vdso_image_x32.data);
++	vdso_x32->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
++	last->region.bhv_mem_region_remove.next =
++		virt_to_phys(&vdso_x32->region);
++	last = vdso_x32;
++#endif /* CONFIG_X86_X32_ABI */
++
++#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
++	vdso_32 = kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
++	if (!vdso_32) {
++		bhv_fail("BHV: failed to allocate mem region");
++		return;
++	}
++	vdso_32->region.bhv_mem_region_remove.start_addr =
++		virt_to_phys(vdso_image_32.data);
++	vdso_32->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
++	last->region.bhv_mem_region_remove.next =
++		virt_to_phys(&vdso_32->region);
++	last = vdso_32;
++#endif /* CONFIG_X86_32 || CONFIG_X86_64 */
++
++	rc = bhv_remove_kern_phys_mem_region_by_region_hyp(&n->region);
++	if (rc)
++		pr_err("BHV: remove region hypercall failed: %d", rc);
++
++		/* Remove VDSO on x86 as it is located in rodata. */
++#ifdef CONFIG_X86_64
++	kmem_cache_free(bhv_mem_region_cache, vdso_64);
++#endif /* CONFIG_X86_64 */
++
++#ifdef CONFIG_X86_X32_ABI
++	kmem_cache_free(bhv_mem_region_cache, vdso_x32);
++#endif /* CONFIG_X86_X32_ABI */
++
++#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
++	kmem_cache_free(bhv_mem_region_cache, vdso_32);
++#endif /* CONFIG_X86_32 || CONFIG_X86_64 */
++
++#if 0
++	/* Update kernel text host mapping */
++	n->region.bhv_mem_region_update.start_addr = virt_to_phys(_stext);
++	n->region.bhv_mem_region_update.type = BHV_MEM_TYPE_CODE_PATCHABLE;
++	n->region.bhv_mem_region_update.flags = BHV_MEM_FLAGS_NONE;
++	n->region.bhv_mem_region_update.next = BHV_INVALID_PHYS_ADDR;
++
++	rc = bhv_update_kern_phys_mem_region_hyp(&(n->region));
++	if (rc)
++		pr_err("BHV: update region hypercall failed: %d", rc);
++
++	/* Add ro_data section NOTE: ro_after_init is contained in this section as well */
++	n->region.bhv_mem_region_create.start_addr =
++		virt_to_phys((void *)__start_rodata);
++	n->region.bhv_mem_region_create.size = __end_rodata - __start_rodata;
++	n->region.bhv_mem_region_create.type = BHV_MEM_TYPE_DATA_READ_ONLY;
++	n->region.bhv_mem_region_create.flags = BHV_MEM_FLAGS_NONE;
++	n->region.bhv_mem_region_create.next = BHV_INVALID_PHYS_ADDR;
++
++	rc = bhv_create_kern_phys_mem_region_hyp(0, &n->region);
++	if (rc)
++		pr_err("BHV: create phys mem region failed: %d", rc);
++#endif
++	kmem_cache_free(bhv_mem_region_cache, n);
++
++	// Free alternatives used during init
++	bhv_alternatives_delete_after_init();
++
++	rc = bhv_start_arch();
++	if (rc)
++		pr_err("BHV: bhv_start_arch failed");
++
++	rc = bhv_start_hyp();
++	if (rc)
++		pr_err("BHV: start hypercall failed: %d", rc);
++}
+diff --git kernel/bpf/bpf_struct_ops.c kernel/bpf/bpf_struct_ops.c
+index ac283f9b2332..4afe69e3c07c 100644
+--- kernel/bpf/bpf_struct_ops.c
++++ kernel/bpf/bpf_struct_ops.c
+@@ -452,6 +452,7 @@ static int bpf_struct_ops_map_update_elem(struct bpf_map *map, void *key,
+ 
+ 	set_memory_ro((long)st_map->image, 1);
+ 	set_memory_x((long)st_map->image, 1);
++	bhv_bpf_protect_x(st_map->image, PAGE_SIZE);
+ 	err = st_ops->reg(kdata);
+ 	if (likely(!err)) {
+ 		/* Pair with smp_load_acquire() during lookup_elem().
+@@ -470,6 +471,7 @@ static int bpf_struct_ops_map_update_elem(struct bpf_map *map, void *key,
+ 	 */
+ 	set_memory_nx((long)st_map->image, 1);
+ 	set_memory_rw((long)st_map->image, 1);
++	bhv_bpf_unprotect(st_map->image);
+ 	bpf_map_put(map);
+ 
+ reset_unlock:
+diff --git kernel/bpf/core.c kernel/bpf/core.c
+index 72e4bf0ee546..17d266c4f654 100644
+--- kernel/bpf/core.c
++++ kernel/bpf/core.c
+@@ -899,6 +899,12 @@ void bpf_jit_binary_free(struct bpf_binary_header *hdr)
+ {
+ 	u32 pages = hdr->pages;
+ 
++	/*
++	 * XXX: bpf_jit_free_exec is a weak symbol. As long as we do not
++	 * directly free memory sections from inside module_memfree, we will not
++	 * be able to place bhv_bpf_unprotect into bpf_jit_free_exec.
++	 */
++	bhv_bpf_unprotect(hdr);
+ 	bpf_jit_free_exec(hdr);
+ 	bpf_jit_uncharge_modmem(pages);
+ }
+diff --git kernel/bpf/trampoline.c kernel/bpf/trampoline.c
+index 986dabc3d11f..a8ddc45aa8c9 100644
+--- kernel/bpf/trampoline.c
++++ kernel/bpf/trampoline.c
+@@ -38,6 +38,11 @@ void *bpf_jit_alloc_exec_page(void)
+ 	 * everytime new program is attached or detached.
+ 	 */
+ 	set_memory_x((long)image, 1);
++	/*
++	 * XXX: Make sure that we foresee all cases that would allow new
++	 * programs to attach/detach and handle the permissions appropriately.
++	 */
++	bhv_bpf_protect_x(image, PAGE_SIZE);
+ 	return image;
+ }
+ 
+@@ -171,6 +176,7 @@ static void __bpf_tramp_image_put_deferred(struct work_struct *work)
+ 
+ 	im = container_of(work, struct bpf_tramp_image, work);
+ 	bpf_image_ksym_del(&im->ksym);
++	bhv_bpf_unprotect(im->image);
+ 	bpf_jit_free_exec(im->image);
+ 	bpf_jit_uncharge_modmem(1);
+ 	percpu_ref_exit(&im->pcref);
+@@ -289,6 +295,7 @@ static struct bpf_tramp_image *bpf_tramp_image_alloc(u64 key, u32 idx)
+ 	return im;
+ 
+ out_free_image:
++	bhv_bpf_unprotect(im->image);
+ 	bpf_jit_free_exec(im->image);
+ out_uncharge:
+ 	bpf_jit_uncharge_modmem(1);
+diff --git kernel/jump_label.c kernel/jump_label.c
+index 4ae693ce71a4..37ae60aa8986 100644
+--- kernel/jump_label.c
++++ kernel/jump_label.c
+@@ -19,6 +19,8 @@
+ #include <linux/cpu.h>
+ #include <asm/sections.h>
+ 
++#include <bhv/patch.h>
++
+ /* mutex to protect coming/going of the jump_label table */
+ static DEFINE_MUTEX(jump_label_mutex);
+ 
+@@ -678,7 +680,7 @@ static int jump_label_add_module(struct module *mod)
+ 			__jump_label_update(key, iter, iter_stop, true);
+ 	}
+ 
+-	return 0;
++	return bhv_jump_label_add_module(mod);
+ }
+ 
+ static void jump_label_del_module(struct module *mod)
+@@ -689,6 +691,8 @@ static void jump_label_del_module(struct module *mod)
+ 	struct static_key *key = NULL;
+ 	struct static_key_mod *jlm, **prev;
+ 
++	bhv_jump_label_del_module(mod);
++
+ 	for (iter = iter_start; iter < iter_stop; iter++) {
+ 		if (jump_entry_key(iter) == key)
+ 			continue;
+diff --git kernel/module.c kernel/module.c
+index 185b2655bc20..e5c3bd1b5454 100644
+--- kernel/module.c
++++ kernel/module.c
+@@ -60,6 +60,8 @@
+ #include <uapi/linux/module.h>
+ #include "module-internal.h"
+ 
++#include <bhv/module.h>
++
+ #define CREATE_TRACE_POINTS
+ #include <trace/events/module.h>
+ 
+@@ -2263,6 +2265,8 @@ static void free_module(struct module *mod)
+ 
+ 	/* Finally, free the core (containing the module structure) */
+ 	module_memfree(mod->core_layout.base);
++
++	bhv_module_unload(mod);
+ }
+ 
+ void *__symbol_get(const char *symbol)
+@@ -3618,6 +3622,7 @@ static void module_deallocate(struct module *mod, struct load_info *info)
+ 	module_arch_freeing_init(mod);
+ 	module_memfree(mod->init_layout.base);
+ 	module_memfree(mod->core_layout.base);
++	bhv_module_unload(mod);
+ }
+ 
+ int __weak module_finalize(const Elf_Ehdr *hdr,
+@@ -3776,6 +3781,7 @@ static noinline int do_init_module(struct module *mod)
+ 	module_enable_ro(mod, true);
+ 	mod_tree_remove_init(mod);
+ 	module_arch_freeing_init(mod);
++	bhv_module_load_complete(mod);
+ 	mod->init_layout.base = NULL;
+ 	mod->init_layout.size = 0;
+ 	mod->init_layout.ro_size = 0;
+@@ -4075,6 +4081,8 @@ static int load_module(struct load_info *info, const char __user *uargs,
+ 	if (err)
+ 		goto ddebug_cleanup;
+ 
++	bhv_module_load_prepare(mod);
++
+ 	err = prepare_coming_module(mod);
+ 	if (err)
+ 		goto bug_cleanup;
