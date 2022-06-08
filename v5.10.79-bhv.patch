@@ -31,23 +31,66 @@ index 5e5cf3af6351..1ed9422f27f4 100644
  	default "14" if (ARM64_64K_PAGES && TRANSPARENT_HUGEPAGE)
 diff --git arch/arm64/bhv/Makefile arch/arm64/bhv/Makefile
 new file mode 100644
-index 000000000000..d4ed00ade273
+index 000000000000..5d13bbcd65fd
 --- /dev/null
 +++ arch/arm64/bhv/Makefile
-@@ -0,0 +1,7 @@
+@@ -0,0 +1,8 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +# bhv-vas-y	+= $(addprefix ../../arm/xen/, enlighten.o grant-table.o p2m.o mm.o)
 +obj-$(CONFIG_BHV_VAS)		:= start.o
++obj-$(CONFIG_BHV_VAS)		+= init.o
 +ifeq ($(CONFIG_JUMP_LABEL),y)
 +obj-$(CONFIG_BHV_VAS)		+= patch_jump_label.o
 +endif
 +obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
+diff --git arch/arm64/bhv/init.c arch/arm64/bhv/init.c
+new file mode 100644
+index 000000000000..a8f2105d16ec
+--- /dev/null
++++ arch/arm64/bhv/init.c
+@@ -0,0 +1,36 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#include <asm/sections.h>
++
++#include <bhv/interface/integrity.h>
++
++void __init bhv_init_hyp_arch(bhv_mem_region_t *init_phys_mem_regions,
++			      unsigned int *region_counter)
++{
++}
 diff --git arch/arm64/bhv/patch_alternative.c arch/arm64/bhv/patch_alternative.c
 new file mode 100644
-index 000000000000..2478c350ae40
+index 000000000000..94aa8666205e
 --- /dev/null
 +++ arch/arm64/bhv/patch_alternative.c
-@@ -0,0 +1,395 @@
+@@ -0,0 +1,396 @@
 +/******************************************************************************
 + * Sebastian Vogl <sebastian@bedrocksystems.com>, BedRock Systems Inc, 2022
 + *
@@ -81,6 +124,7 @@ index 000000000000..2478c350ae40
 +#include <bhv/vault.h>
 +#include <bhv/bhv.h>
 +#include <asm/insn.h>
++#include <asm/debug-monitors.h>
 +#include <linux/mm.h>
 +
 +void bhv_alternatives_add_module_arch(struct alt_instr *begin,
@@ -1029,23 +1073,154 @@ index c3d9f56c9018..325e58f61ae8 100644
  source "arch/x86/Kconfig.cpu"
 diff --git arch/x86/bhv/Makefile arch/x86/bhv/Makefile
 new file mode 100644
-index 000000000000..543bd657f3c2
+index 000000000000..c76796676603
 --- /dev/null
 +++ arch/x86/bhv/Makefile
-@@ -0,0 +1,7 @@
+@@ -0,0 +1,8 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +obj-$(CONFIG_BHV_VAS)		:= start.o
++obj-$(CONFIG_BHV_VAS)		+= init.o
 +obj-$(CONFIG_BHV_VAS)		+= integrity.o
 +ifeq ($(CONFIG_JUMP_LABEL),y)
 +obj-$(CONFIG_BHV_VAS)		+= patch_jump_label.o
 +endif
 +obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
+diff --git arch/x86/bhv/init.c arch/x86/bhv/init.c
+new file mode 100644
+index 000000000000..e2774ff6b889
+--- /dev/null
++++ arch/x86/bhv/init.c
+@@ -0,0 +1,124 @@
++/******************************************************************************
++ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License version 2
++ * as published by the Free Software Foundation; or, when distributed
++ * separately from the Linux kernel or incorporated into other
++ * software packages, subject to the following license:
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this source file (the "Software"), to deal in the Software without
++ * restriction, including without limitation the rights to use, copy, modify,
++ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
++ * and to permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ ******************************************************************************/
++
++#include <bhv/interface/common.h>
++#include <bhv/interface/integrity.h>
++#include <bhv/init.h>
++
++#include <asm/io.h>
++#include <asm/sections.h>
++#include <asm/vdso.h>
++
++static __always_inline void
++bhv_init_add_vdso_image_64(bhv_mem_region_t *init_phys_mem_regions,
++			   unsigned int *region_counter)
++{
++#ifdef CONFIG_X86_64
++	BUG_ON((*region_counter) >= BHV_INIT_MAX_REGIONS);
++
++	if ((*region_counter) > 0)
++		init_phys_mem_regions[(*region_counter) - 1]
++			.bhv_mem_region_create.next = virt_to_phys(
++			&(init_phys_mem_regions[(*region_counter)]));
++
++	init_phys_mem_regions[(*region_counter)]
++		.bhv_mem_region_create.start_addr =
++		virt_to_phys(vdso_image_64.data);
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.size =
++		vdso_image_64.size;
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.type =
++		BHV_MEM_TYPE_CODE_PATCHABLE;
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.flags =
++		BHV_MEM_FLAGS_TRANSIENT;
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.next =
++		BHV_INVALID_PHYS_ADDR;
++	(*region_counter)++;
++#endif /* CONFIG_X86_64 */
++}
++
++static __always_inline void
++bhv_init_add_vdso_image_x32(bhv_mem_region_t *init_phys_mem_regions,
++			    unsigned int *region_counter)
++{
++#ifdef CONFIG_X86_X32_ABI
++	BUG_ON((*region_counter) >= BHV_INIT_MAX_REGIONS);
++
++	if ((*region_counter) > 0)
++		init_phys_mem_regions[(*region_counter) - 1]
++			.bhv_mem_region_create.next = virt_to_phys(
++			&(init_phys_mem_regions[(*region_counter)]));
++
++	init_phys_mem_regions[(*region_counter)]
++		.bhv_mem_region_create.start_addr =
++		virt_to_phys(vdso_image_x32.data);
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.size =
++		vdso_image_x32.size;
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.type =
++		BHV_MEM_TYPE_CODE_PATCHABLE;
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.flags =
++		BHV_MEM_FLAGS_TRANSIENT;
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.next =
++		BHV_INVALID_PHYS_ADDR;
++	(*region_counter)++;
++#endif /* CONFIG_X86_X32_ABI */
++}
++
++static __always_inline void
++bhv_init_add_vdso_image_32(bhv_mem_region_t *init_phys_mem_regions,
++			   unsigned int *region_counter)
++{
++#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
++	BUG_ON((*region_counter) >= BHV_INIT_MAX_REGIONS);
++
++	if ((*region_counter) > 0)
++		init_phys_mem_regions[(*region_counter) - 1]
++			.bhv_mem_region_create.next = virt_to_phys(
++			&(init_phys_mem_regions[(*region_counter)]));
++
++	init_phys_mem_regions[(*region_counter)]
++		.bhv_mem_region_create.start_addr =
++		virt_to_phys(vdso_image_32.data);
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.size =
++		vdso_image_32.size;
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.type =
++		BHV_MEM_TYPE_CODE_PATCHABLE;
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.flags =
++		BHV_MEM_FLAGS_TRANSIENT;
++	init_phys_mem_regions[(*region_counter)].bhv_mem_region_create.next =
++		BHV_INVALID_PHYS_ADDR;
++	(*region_counter)++;
++#endif /* defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT) */
++}
++
++void __init bhv_init_hyp_arch(bhv_mem_region_t *init_phys_mem_regions,
++			      unsigned int *region_counter)
++{
++	bhv_init_add_vdso_image_64(init_phys_mem_regions, region_counter);
++	bhv_init_add_vdso_image_x32(init_phys_mem_regions, region_counter);
++	bhv_init_add_vdso_image_32(init_phys_mem_regions, region_counter);
++}
 diff --git arch/x86/bhv/integrity.c arch/x86/bhv/integrity.c
 new file mode 100644
-index 000000000000..2d3fed14e297
+index 000000000000..3034fa7beacc
 --- /dev/null
 +++ arch/x86/bhv/integrity.c
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,235 @@
 +/*
 + * Copyright (C) 2022, BedRock Systems, Inc.
 + *
@@ -1068,8 +1243,9 @@ index 000000000000..2d3fed14e297
 +
 +#include <asm/io.h>
 +#include <asm/syscall.h>
-+#include <asm/bhv/integrity.h>
++#include <asm/vdso.h>
 +
++#include <asm/bhv/integrity.h>
 +#include <bhv/interface/common.h>
 +#include <bhv/integrity.h>
 +#include <bhv/bhv.h>
@@ -1108,15 +1284,46 @@ index 000000000000..2d3fed14e297
 +	n->region.bhv_mem_region_create.next = BHV_INVALID_PHYS_ADDR;
 +
 +	/*
-+        ¦* XXX: Consider moving the field 'next' out of the union in
-+        ¦* bhv_mem_region_t. This will allow to move the remaining
-+        ¦* list-maintenance operations into the calling function.
-+        ¦*/
++	 * XXX: Consider moving the field 'next' out of the union in
++	 * bhv_mem_region_t. This will allow to move the remaining
++	 * list-maintenance operations into the calling function.
++	 */
 +
 +	if (!list_empty(head)) {
 +		bhv_mem_region_node_t *tail =
 +			list_last_entry(head, bhv_mem_region_node_t, list);
 +		tail->region.bhv_mem_region_create.next =
++			virt_to_phys(&n->region);
++	}
++
++	list_add_tail(&n->list, head);
++
++	return 0;
++}
++
++/* XXX: Pull this out into common code. */
++static int bhv_link_node_op_remove(struct list_head *head, uint64_t addr)
++{
++	bhv_mem_region_node_t *n =
++		kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
++	if (n == NULL) {
++		bhv_fail("BHV: failed to allocate mem region");
++		return -ENOMEM;
++	}
++
++	n->region.bhv_mem_region_remove.start_addr = addr;
++	n->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
++
++	/*
++	 * XXX: Consider moving the field 'next' out of the union in
++	 * bhv_mem_region_t. This will allow to move the remaining
++	 * list-maintenance operations into the calling function.
++	 */
++
++	if (!list_empty(head)) {
++		bhv_mem_region_node_t *tail =
++			list_last_entry(head, bhv_mem_region_node_t, list);
++		tail->region.bhv_mem_region_remove.next =
 +			virt_to_phys(&n->region);
 +	}
 +
@@ -1135,7 +1342,7 @@ index 000000000000..2d3fed14e297
 +				       BHV_MEM_FLAGS_NONE);
 +}
 +
-+int bhv_start_integrity_arch(void)
++static int bhv_start_integrity_add_idt(void)
 +{
 +	int rc = 0;
 +	bhv_mem_region_node_t *n = NULL;
@@ -1169,6 +1376,75 @@ index 000000000000..2d3fed14e297
 +	return rc;
 +}
 +
++static inline int rm_vdso_image_64(struct list_head *head)
++{
++#ifdef CONFIG_X86_64
++	return bhv_link_node_op_remove(head, virt_to_phys(vdso_image_64.data));
++#else
++	return 0;
++#endif
++}
++
++static inline int rm_vdso_image_x32(struct list_head *head)
++{
++#ifdef CONFIG_X86_X32_ABI
++	return bhv_link_node_op_remove(head, virt_to_phys(vdso_image_x32.data));
++#else
++	return 0;
++#endif
++}
++
++static inline int rm_vdso_image_32(struct list_head *head)
++{
++#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
++	return bhv_link_node_op_remove(head, virt_to_phys(vdso_image_32.data));
++#else
++	return 0;
++#endif
++}
++
++static int bhv_start_integrity_rm_vdso(void)
++{
++	int rc = 0;
++	bhv_mem_region_node_t *n = NULL;
++
++	LIST_HEAD(head);
++
++	rc = rm_vdso_image_64(&head);
++	if (rc)
++		goto out;
++
++	rc = rm_vdso_image_x32(&head);
++	if (rc)
++		goto out;
++
++	rc = rm_vdso_image_32(&head);
++	if (rc)
++		goto out;
++
++	n = list_first_entry_or_null(&head, bhv_mem_region_node_t, list);
++	BUG_ON(n == NULL);
++
++	rc = bhv_remove_kern_phys_mem_region_by_region_hyp(&n->region);
++	if (rc) {
++		bhv_fail("BHV: Cannot remove phys mem regions");
++		goto out;
++	}
++
++out:
++	bhv_release_arg_list(&head);
++	return rc;
++}
++
++int bhv_start_integrity_arch(void)
++{
++	int rc = bhv_start_integrity_add_idt();
++	if (rc)
++		return rc;
++
++	return bhv_start_integrity_rm_vdso();
++}
++
 +void __init bhv_register_idt(uint64_t addr, int numpages)
 +{
 +	table_data.addr = addr;
@@ -1180,7 +1456,6 @@ index 000000000000..2d3fed14e297
 +{
 +	memset(&table_data, 0, sizeof(table_data));
 +}
-+
 diff --git arch/x86/bhv/patch_alternative.c arch/x86/bhv/patch_alternative.c
 new file mode 100644
 index 000000000000..35e607f3404b
@@ -2292,10 +2567,10 @@ index a774361f28d4..4b1e92cdc356 100644
  
 diff --git include/bhv/bhv.h include/bhv/bhv.h
 new file mode 100644
-index 000000000000..eb54a5405b2d
+index 000000000000..b1caf808f97b
 --- /dev/null
 +++ include/bhv/bhv.h
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,53 @@
 +/******************************************************************************
 + * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
 + *
@@ -2340,8 +2615,6 @@ index 000000000000..eb54a5405b2d
 +
 +extern bool bhv_initialized __ro_after_init;
 +
-+void bhv_init(void);
-+
 +#ifdef CONFIG_BHV_VAS
 +void __init bhv_mm_init(void);
 +#else /* CONFIG_BHV_VAS */
@@ -2353,10 +2626,10 @@ index 000000000000..eb54a5405b2d
 +#endif /* __BVH_BHV_H__ */
 diff --git include/bhv/init.h include/bhv/init.h
 new file mode 100644
-index 000000000000..356a288ad3c7
+index 000000000000..79170b4c84ea
 --- /dev/null
 +++ include/bhv/init.h
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,43 @@
 +/******************************************************************************
 + * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
 + *
@@ -2388,8 +2661,15 @@ index 000000000000..356a288ad3c7
 +#ifndef __BHV_INIT_H__
 +#define __BHV_INIT_H__
 +
++#include <bhv/interface/integrity.h>
++
++/* This constant must take into account any regions added in bhv_init_hyp_arch(...) */
++static const unsigned int BHV_INIT_MAX_REGIONS = 5;
++
 +int __init bhv_init_hyp(void *init_start, uint64_t init_size, void *text_start,
 +			uint64_t text_size);
++void __init bhv_init_hyp_arch(bhv_mem_region_t *init_phys_mem_regions,
++			      unsigned int *region_counter);
 +int bhv_start_hyp(void);
 +
 +#endif /* __BHV_INIT_H__ */
@@ -2976,10 +3256,10 @@ index 000000000000..827ca2740313
 +#endif /* __BHV_MODULE_H__ */
 diff --git include/bhv/patch.h include/bhv/patch.h
 new file mode 100644
-index 000000000000..33da604b186f
+index 000000000000..6fdcc3023aa2
 --- /dev/null
 +++ include/bhv/patch.h
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,98 @@
 +/******************************************************************************
 + * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
 + *
@@ -3019,10 +3299,6 @@ index 000000000000..33da604b186f
 +
 +#ifdef CONFIG_BHV_VAS
 +
-+extern struct kmem_cache *bhv_patch_arg_cache;
-+
-+void __init bhv_patch_mm_init(void);
-+
 +#ifdef CONFIG_JUMP_LABEL
 +int bhv_patch_jump_label(struct jump_entry *entry, const void *opcode,
 +			 size_t len);
@@ -3055,10 +3331,6 @@ index 000000000000..33da604b186f
 +				 struct bhv_alternatives_mod_arch *arch);
 +void bhv_alternatives_delete_after_init(void);
 +#else /* CONFIG_BHV_VAS */
-+
-+static inline void bhv_patch_mm_init(void)
-+{
-+}
 +
 +#ifdef CONFIG_JUMP_LABEL
 +static inline int bhv_patch_jump_label(struct jump_entry *entry,
@@ -3312,17 +3584,16 @@ index 000000000000..f53bd2dcba90
 +	  fails.
 diff --git kernel/bhv/Makefile kernel/bhv/Makefile
 new file mode 100644
-index 000000000000..f2827afb1c30
+index 000000000000..c9e78b250f06
 --- /dev/null
 +++ kernel/bhv/Makefile
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,11 @@
 +# SPDX-License-Identifier: GPL-2.0
 +
 +obj-$(CONFIG_BHV_VAS)		:= bhv.o
 +obj-$(CONFIG_BHV_VAS)		+= start.o
 +obj-$(CONFIG_BHV_VAS)		+= init.o
 +obj-$(CONFIG_BHV_VAS)		+= integrity.o
-+obj-$(CONFIG_BHV_VAS)		+= patch.o
 +ifeq ($(CONFIG_JUMP_LABEL),y)
 +obj-$(CONFIG_BHV_VAS)		+= patch_jump_label.o
 +endif
@@ -3330,10 +3601,10 @@ index 000000000000..f2827afb1c30
 +obj-$(CONFIG_BHV_VAS)		+= module.o
 diff --git kernel/bhv/bhv.c kernel/bhv/bhv.c
 new file mode 100644
-index 000000000000..0a60f7872b17
+index 000000000000..a7ea3a298f66
 --- /dev/null
 +++ kernel/bhv/bhv.c
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,29 @@
 +/*
 + * Copyright (C) 2022, BedRock Systems, Inc.
 + *
@@ -3362,19 +3633,14 @@ index 000000000000..0a60f7872b17
 +void __init bhv_mm_init(void)
 +{
 +	bhv_integrity_mm_init();
-+	bhv_patch_mm_init();
-+}
-+
-+void bhv_init(void)
-+{
 +}
 \ No newline at end of file
 diff --git kernel/bhv/init.c kernel/bhv/init.c
 new file mode 100644
-index 000000000000..e8dd2d2a0703
+index 000000000000..cf4928572c28
 --- /dev/null
 +++ kernel/bhv/init.c
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,108 @@
 +/******************************************************************************
 + * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
 + *
@@ -3406,18 +3672,11 @@ index 000000000000..e8dd2d2a0703
 +#include <asm/io.h>
 +#include <asm/sections.h>
 +
-+#if defined CONFIG_X86_32 || defined CONFIG_X86_64 || defined CONFIG_X86_X32_ABI
-+#include <asm/vdso.h>
-+#endif
-+
 +#include <bhv/interface/common.h>
 +#include <bhv/interface/hypercall.h>
 +#include <bhv/interface/init.h>
 +#include <bhv/interface/integrity.h>
-+
-+void bhv_init_init(void)
-+{
-+}
++#include <bhv/init.h>
 +
 +int __init bhv_init_hyp(void *init_start, uint64_t init_size, void *text_start,
 +			uint64_t text_size)
@@ -3431,23 +3690,9 @@ index 000000000000..e8dd2d2a0703
 +	void *bhv_text = __bhv_text_start;
 +	uint64_t bhv_text_size = __bhv_text_end - __bhv_text_start;
 +
-+	// Counter for regions
-+	unsigned int nr_regions = 2;
 +	unsigned int region_counter = 0;
 +
-+#ifdef CONFIG_X86_64
-+	nr_regions++;
-+#endif /* CONFIG_X86_64 */
-+
-+#ifdef CONFIG_X86_X32_ABI
-+	nr_regions++;
-+#endif /* CONFIG_X86_X32_ABI */
-+
-+#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
-+	nr_regions++;
-+#endif /* CONFIG_X86_32 || CONFIG_X86_64 */
-+
-+	BUG_ON(((nr_regions * sizeof(bhv_mem_region_t)) +
++	BUG_ON(((BHV_INIT_MAX_REGIONS * sizeof(bhv_mem_region_t)) +
 +		sizeof(bhv_init_arg_t)) > bhv_data_size);
 +
 +	init_phys_mem_regions = bhv_data;
@@ -3474,69 +3719,12 @@ index 000000000000..e8dd2d2a0703
 +		BHV_MEM_FLAGS_NONE;
 +	init_phys_mem_regions[region_counter].bhv_mem_region_create.next =
 +		BHV_INVALID_PHYS_ADDR;
-+
-+#ifdef CONFIG_X86_64
-+	// Update region counter
 +	region_counter++;
 +
-+	// Update last region
-+	init_phys_mem_regions[region_counter - 1].bhv_mem_region_create.next =
-+		virt_to_phys(&(init_phys_mem_regions[region_counter]));
-+
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.start_addr =
-+		virt_to_phys(vdso_image_64.data);
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.size =
-+		vdso_image_64.size;
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.type =
-+		BHV_MEM_TYPE_CODE_PATCHABLE;
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.flags =
-+		BHV_MEM_FLAGS_TRANSIENT;
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.next =
-+		BHV_INVALID_PHYS_ADDR;
-+#endif /* CONFIG_X86_64 */
-+
-+#ifdef CONFIG_X86_X32_ABI
-+	// Update region counter
-+	region_counter++;
-+
-+	// Update last region
-+	init_phys_mem_regions[region_counter - 1].bhv_mem_region_create.next =
-+		virt_to_phys(&(init_phys_mem_regions[region_counter]));
-+
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.start_addr =
-+		virt_to_phys(vdso_image_x32.data);
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.size =
-+		vdso_image_x32.size;
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.type =
-+		BHV_MEM_TYPE_CODE_PATCHABLE;
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.flags =
-+		BHV_MEM_FLAGS_TRANSIENT;
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.next =
-+		BHV_INVALID_PHYS_ADDR;
-+#endif /* CONFIG_X86_X32_ABI */
-+
-+#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
-+	// Update region counter
-+	region_counter++;
-+
-+	// Update last region
-+	init_phys_mem_regions[region_counter - 1].bhv_mem_region_create.next =
-+		virt_to_phys(&(init_phys_mem_regions[region_counter]));
-+
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.start_addr =
-+		virt_to_phys(vdso_image_32.data);
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.size =
-+		vdso_image_32.size;
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.type =
-+		BHV_MEM_TYPE_CODE_PATCHABLE;
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.flags =
-+		BHV_MEM_FLAGS_TRANSIENT;
-+	init_phys_mem_regions[region_counter].bhv_mem_region_create.next =
-+		BHV_INVALID_PHYS_ADDR;
-+#endif /* CONFIG_X86_32 || CONFIG_X86_64 */
++	bhv_init_hyp_arch(init_phys_mem_regions, &region_counter);
 +
 +	// Set size of init args
-+	init_arg = bhv_data + (nr_regions * sizeof(bhv_mem_region_t));
++	init_arg = bhv_data + (BHV_INIT_MAX_REGIONS * sizeof(bhv_mem_region_t));
 +
 +	init_arg->bhv_init_init_arg.bhv_data_start = virt_to_phys(bhv_data);
 +	init_arg->bhv_init_init_arg.bhv_data_size = bhv_data_size;
@@ -4184,51 +4372,6 @@ index 000000000000..091f5f61f6a3
 +{
 +	bhv_release_memory_by_owner((uint64_t)base);
 +}
-diff --git kernel/bhv/patch.c kernel/bhv/patch.c
-new file mode 100644
-index 000000000000..860d771de761
---- /dev/null
-+++ kernel/bhv/patch.c
-@@ -0,0 +1,39 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
-+
-+#include <bhv/interface/patch.h>
-+#include <bhv/patch.h>
-+
-+struct kmem_cache *bhv_patch_arg_cache = NULL;
-+
-+void __init bhv_patch_mm_init(void)
-+{
-+	bhv_patch_arg_cache = kmem_cache_create(
-+		"bhv_patch_arg_cache", sizeof(bhv_patch_arg_t), 0,
-+		SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
-+}
 diff --git kernel/bhv/patch_alternative.c kernel/bhv/patch_alternative.c
 new file mode 100644
 index 000000000000..a307788a9650
@@ -4433,7 +4576,7 @@ index 000000000000..a307788a9650
 \ No newline at end of file
 diff --git kernel/bhv/patch_jump_label.c kernel/bhv/patch_jump_label.c
 new file mode 100644
-index 000000000000..9106618303ae
+index 000000000000..85cf581778e6
 --- /dev/null
 +++ kernel/bhv/patch_jump_label.c
 @@ -0,0 +1,171 @@
@@ -4594,26 +4737,26 @@ index 000000000000..9106618303ae
 +{
 +	int rv = 0;
 +
-+	bhv_patch_arg_t *bhv_arg =
-+		kmem_cache_alloc(bhv_patch_arg_cache, GFP_KERNEL);
-+	if (!bhv_arg) {
-+		bhv_fail("BHV: failed to allocate arg.");
-+		return -ENOMEM;
-+	}
++	/*
++	 * This allocation assumes synchronization around
++	 * bhv_vault_patch_jump_label(...).  This is the current solution
++	 * here as jump label patching happens before kmem caches are
++	 * allocated.
++	 */
++	static bhv_patch_arg_t bhv_arg;
 +
 +	bhv_jump_label_lock();
-+	rv = bhv_vault_patch_jump_label(entry, opcode, len, bhv_arg);
++	rv = bhv_vault_patch_jump_label(entry, opcode, len, &bhv_arg);
 +	bhv_jump_label_unlock();
 +
-+	kmem_cache_free(bhv_patch_arg_cache, bhv_arg);
 +	return rv;
 +}
 diff --git kernel/bhv/start.c kernel/bhv/start.c
 new file mode 100644
-index 000000000000..b0af33d9b954
+index 000000000000..d4fe4acd27ec
 --- /dev/null
 +++ kernel/bhv/start.c
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,94 @@
 +/*
 + * Copyright (C) 2022, BedRock Systems, Inc.
 + *
@@ -4646,10 +4789,6 @@ index 000000000000..b0af33d9b954
 +#include <bhv/start.h>
 +#include <bhv/patch.h>
 +
-+#if defined CONFIG_X86_32 || defined CONFIG_X86_64 || defined CONFIG_X86_X32_ABI
-+#include <asm/vdso.h>
-+#endif
-+
 +bool bhv_initialized __ro_after_init = false;
 +
 +void __init bhv_init_platform(void)
@@ -4668,23 +4807,9 @@ index 000000000000..b0af33d9b954
 +{
 +	int rc;
 +	bhv_mem_region_node_t *n;
-+	bhv_mem_region_node_t *last;
-+#ifdef CONFIG_X86_64
-+	bhv_mem_region_node_t *vdso_64;
-+#endif /* CONFIG_X86_64 */
-+
-+#ifdef CONFIG_X86_X32_ABI
-+	bhv_mem_region_node_t *vdso_x32;
-+#endif /* CONFIG_X86_X32_ABI */
-+
-+#if defined CONFIG_X86_32 || defined CONFIG_COMPAT
-+	bhv_mem_region_node_t *vdso_32;
-+#endif /* CONFIG_X86_32 || CONFIG_X86_64 */
 +
 +	if (!bhv_initialized)
 +		return;
-+
-+	bhv_init();
 +
 +	n = kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
 +	if (!n) {
@@ -4696,78 +4821,10 @@ index 000000000000..b0af33d9b954
 +	n->region.bhv_mem_region_remove.start_addr =
 +		virt_to_phys(_sinittext);
 +	n->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
-+	last = n;
-+
-+	/* Remove VDSO on x86 as it is located in rodata. */
-+#ifdef CONFIG_X86_64
-+	vdso_64 = kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
-+	if (!vdso_64) {
-+		bhv_fail("BHV: failed to allocate mem region");
-+		return;
-+	}
-+	vdso_64->region.bhv_mem_region_remove.start_addr =
-+		virt_to_phys(vdso_image_64.data);
-+	vdso_64->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
-+	last->region.bhv_mem_region_remove.next =
-+		virt_to_phys(&vdso_64->region);
-+	last = vdso_64;
-+#endif /* CONFIG_X86_64 */
-+
-+#ifdef CONFIG_X86_X32_ABI
-+	vdso_x32 = kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
-+	if (!vdso_x32) {
-+		bhv_fail("BHV: failed to allocate mem region");
-+		return;
-+	}
-+	vdso_x32->region.bhv_mem_region_remove.start_addr =
-+		virt_to_phys(vdso_image_x32.data);
-+	vdso_x32->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
-+	last->region.bhv_mem_region_remove.next =
-+		virt_to_phys(&vdso_x32->region);
-+	last = vdso_x32;
-+#endif /* CONFIG_X86_X32_ABI */
-+
-+#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
-+	vdso_32 = kmem_cache_alloc(bhv_mem_region_cache, GFP_KERNEL);
-+	if (!vdso_32) {
-+		bhv_fail("BHV: failed to allocate mem region");
-+		return;
-+	}
-+	vdso_32->region.bhv_mem_region_remove.start_addr =
-+		virt_to_phys(vdso_image_32.data);
-+	vdso_32->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
-+	last->region.bhv_mem_region_remove.next =
-+		virt_to_phys(&vdso_32->region);
-+	last = vdso_32;
-+#endif /* CONFIG_X86_32 || CONFIG_X86_64 */
 +
 +	rc = bhv_remove_kern_phys_mem_region_by_region_hyp(&n->region);
 +	if (rc)
 +		pr_err("BHV: remove region hypercall failed: %d", rc);
-+
-+		/* Remove VDSO on x86 as it is located in rodata. */
-+#ifdef CONFIG_X86_64
-+	kmem_cache_free(bhv_mem_region_cache, vdso_64);
-+#endif /* CONFIG_X86_64 */
-+
-+#ifdef CONFIG_X86_X32_ABI
-+	kmem_cache_free(bhv_mem_region_cache, vdso_x32);
-+#endif /* CONFIG_X86_X32_ABI */
-+
-+#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
-+	kmem_cache_free(bhv_mem_region_cache, vdso_32);
-+#endif /* CONFIG_X86_32 || CONFIG_X86_64 */
-+
-+#if 0
-+	/* Update kernel text host mapping */
-+	n->region.bhv_mem_region_update.start_addr = virt_to_phys(_stext);
-+	n->region.bhv_mem_region_update.type = BHV_MEM_TYPE_CODE_PATCHABLE;
-+	n->region.bhv_mem_region_update.flags = BHV_MEM_FLAGS_NONE;
-+	n->region.bhv_mem_region_update.next = BHV_INVALID_PHYS_ADDR;
-+
-+	rc = bhv_update_kern_phys_mem_region_hyp(&(n->region));
-+	if (rc)
-+		pr_err("BHV: update region hypercall failed: %d", rc);
 +
 +	/* Add ro_data section NOTE: ro_after_init is contained in this section as well */
 +	n->region.bhv_mem_region_create.start_addr =
@@ -4780,15 +4837,15 @@ index 000000000000..b0af33d9b954
 +	rc = bhv_create_kern_phys_mem_region_hyp(0, &n->region);
 +	if (rc)
 +		pr_err("BHV: create phys mem region failed: %d", rc);
-+#endif
-+	kmem_cache_free(bhv_mem_region_cache, n);
 +
-+	// Free alternatives used during init
-+	bhv_alternatives_delete_after_init();
++	kmem_cache_free(bhv_mem_region_cache, n);
 +
 +	rc = bhv_start_arch();
 +	if (rc)
 +		pr_err("BHV: bhv_start_arch failed");
++
++	// Free alternatives used during init
++	bhv_alternatives_delete_after_init();
 +
 +	rc = bhv_start_hyp();
 +	if (rc)
