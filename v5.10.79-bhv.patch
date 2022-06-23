@@ -31,12 +31,17 @@ index 5e5cf3af6351..1ed9422f27f4 100644
  	default "14" if (ARM64_64K_PAGES && TRANSPARENT_HUGEPAGE)
 diff --git arch/arm64/bhv/Makefile arch/arm64/bhv/Makefile
 new file mode 100644
-index 000000000000..2c331cee0109
+index 000000000000..e66e83fdb5eb
 --- /dev/null
 +++ arch/arm64/bhv/Makefile
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,14 @@
 +# SPDX-License-Identifier: GPL-2.0-only
-+# bhv-vas-y	+= $(addprefix ../../arm/xen/, enlighten.o grant-table.o p2m.o mm.o)
++
++# Copyright (C) 2022 - BedRock Systems Inc
++# Authors: Sergej Proskurin <sergej@bedrocksystems.com>
++#          Jonas Pfoh <jonas@bedrocksystems.com>
++#          Sebastian Vogl <sebastian@bedrocksystems.com>
++
 +obj-$(CONFIG_BHV_VAS)		:= start.o
 +obj-$(CONFIG_BHV_VAS)		+= init.o
 +obj-$(CONFIG_BHV_VAS)		+= integrity.o
@@ -46,37 +51,15 @@ index 000000000000..2c331cee0109
 +obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
 diff --git arch/arm64/bhv/init.c arch/arm64/bhv/init.c
 new file mode 100644
-index 000000000000..a8f2105d16ec
+index 000000000000..70a504119bab
 --- /dev/null
 +++ arch/arm64/bhv/init.c
-@@ -0,0 +1,36 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Author: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#include <asm/sections.h>
 +
@@ -88,29 +71,16 @@ index 000000000000..a8f2105d16ec
 +}
 diff --git arch/arm64/bhv/integrity.c arch/arm64/bhv/integrity.c
 new file mode 100644
-index 000000000000..b085c2975d4e
+index 000000000000..8099e812ca4b
 --- /dev/null
 +++ arch/arm64/bhv/integrity.c
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,63 @@
++// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022, BedRock Systems, Inc.
-+ *
-+ * This program is free software; you can redistribute it and/or modify
-+ * it under the terms of the GNU General Public License as published by
-+ * the Free Software Foundation; either version 2 of the License, or
-+ * (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful, but
-+ * WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
-+ * NON INFRINGEMENT.  See the GNU General Public License for more
-+ * details.
-+ *
-+ * You should have received a copy of the GNU General Public License
-+ * along with this program; if not, write to the Free Software
-+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
-+ *
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Author: Jonas Pfoh <jonas@bedrocksystems.com>
 + */
++
 +#include <asm/page.h>
 +#include <asm/io.h>
 +#include <asm-generic/sections.h>
@@ -170,37 +140,17 @@ index 000000000000..b085c2975d4e
 +}
 diff --git arch/arm64/bhv/patch_alternative.c arch/arm64/bhv/patch_alternative.c
 new file mode 100644
-index 000000000000..94aa8666205e
+index 000000000000..a16d97cd2704
 --- /dev/null
 +++ arch/arm64/bhv/patch_alternative.c
-@@ -0,0 +1,396 @@
-+/******************************************************************************
-+ * Sebastian Vogl <sebastian@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,376 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sebastian Vogl <sebastian@bedrocksystems.com>
++ *          Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
 +#include <bhv/patch.h>
 +#include <bhv/interface/patch.h>
 +#include <asm/bhv/patch.h>
@@ -572,37 +522,16 @@ index 000000000000..94aa8666205e
 +}
 diff --git arch/arm64/bhv/patch_jump_label.c arch/arm64/bhv/patch_jump_label.c
 new file mode 100644
-index 000000000000..acd2f49d352e
+index 000000000000..610215168f50
 --- /dev/null
 +++ arch/arm64/bhv/patch_jump_label.c
-@@ -0,0 +1,100 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,79 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ */
 +
 +#include <linux/jump_label.h>
 +#include <linux/string.h>
@@ -678,28 +607,15 @@ index 000000000000..acd2f49d352e
 +}
 diff --git arch/arm64/bhv/start.c arch/arm64/bhv/start.c
 new file mode 100644
-index 000000000000..8e6f9ba3db54
+index 000000000000..605d0ae18110
 --- /dev/null
 +++ arch/arm64/bhv/start.c
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,18 @@
++// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022, BedRock Systems, Inc.
-+ *
-+ * This program is free software; you can redistribute it and/or modify
-+ * it under the terms of the GNU General Public License as published by
-+ * the Free Software Foundation; either version 2 of the License, or
-+ * (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful, but
-+ * WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
-+ * NON INFRINGEMENT.  See the GNU General Public License for more
-+ * details.
-+ *
-+ * You should have received a copy of the GNU General Public License
-+ * along with this program; if not, write to the Free Software
-+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
-+ *
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
 + */
 +
 +#include <asm/io.h>
@@ -743,37 +659,15 @@ index 3cb3c4ab3ea5..632546cb6526 100644
  void __init apply_alternatives_all(void);
 diff --git arch/arm64/include/asm/bhv/hypercall.h arch/arm64/include/asm/bhv/hypercall.h
 new file mode 100644
-index 000000000000..a3177fda7f1d
+index 000000000000..16f767181c09
 --- /dev/null
 +++ arch/arm64/include/asm/bhv/hypercall.h
-@@ -0,0 +1,52 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#ifndef __ASM_BHV_HYPERCALL_H__
 +#define __ASM_BHV_HYPERCALL_H__
@@ -801,28 +695,15 @@ index 000000000000..a3177fda7f1d
 +#endif /* __ASM_BHV_HYPERCALL_H__ */
 diff --git arch/arm64/include/asm/bhv/patch.h arch/arm64/include/asm/bhv/patch.h
 new file mode 100644
-index 000000000000..e20171b32ad0
+index 000000000000..0a0a0dedd484
 --- /dev/null
 +++ arch/arm64/include/asm/bhv/patch.h
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,43 @@
++// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022, BedRock Systems, Inc.
-+ *
-+ * This program is free software; you can redistribute it and/or modify
-+ * it under the terms of the GNU General Public License as published by
-+ * the Free Software Foundation; either version 2 of the License, or
-+ * (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful, but
-+ * WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
-+ * NON INFRINGEMENT.  See the GNU General Public License for more
-+ * details.
-+ *
-+ * You should have received a copy of the GNU General Public License
-+ * along with this program; if not, write to the Free Software
-+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
-+ *
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
 + */
 +
 +#ifndef __ASM_BHV_PATCH_H__
@@ -861,6 +742,28 @@ index 000000000000..e20171b32ad0
 +#endif /* CONFIG_BHV_VAS */
 +
 +#endif /* __ASM_BHV_PATCH_H__ */
+diff --git arch/arm64/include/asm/kvm_mmu.h arch/arm64/include/asm/kvm_mmu.h
+index 331394306cce..0cdb121c095d 100644
+--- arch/arm64/include/asm/kvm_mmu.h
++++ arch/arm64/include/asm/kvm_mmu.h
+@@ -80,8 +80,17 @@ alternative_cb_end
+ #include <asm/cacheflush.h>
+ #include <asm/mmu_context.h>
+ 
++#ifdef CONFIG_BHV_VAS
++#include <bhv/interface/patch.h>
++#endif
++
++#ifdef CONFIG_BHV_VAS
++void kvm_update_va_mask(struct alt_instr *alt, __le32 *origptr, __le32 *updptr,
++			int nr_inst, bhv_patch_arg_t *bhv_arg);
++#else /* CONFIG_BHV_VAS */
+ void kvm_update_va_mask(struct alt_instr *alt,
+ 			__le32 *origptr, __le32 *updptr, int nr_inst);
++#endif /* CONFIG_BHV_VAS */
+ void kvm_compute_layout(void);
+ 
+ static __always_inline unsigned long __kern_hyp_va(unsigned long v)
 diff --git arch/arm64/kernel/alternative.c arch/arm64/kernel/alternative.c
 index 73039949b5ce..cf6630521469 100644
 --- arch/arm64/kernel/alternative.c
@@ -1116,6 +1019,147 @@ index 30c102978942..b7a1d8115090 100644
  	PECOFF_EDATA_PADDING
  	__pecoff_data_rawsize = ABSOLUTE(. - __initdata_begin);
  	_edata = .;
+diff --git arch/arm64/kvm/va_layout.c arch/arm64/kvm/va_layout.c
+index e0404bcab019..0cb1c88d4518 100644
+--- arch/arm64/kvm/va_layout.c
++++ arch/arm64/kvm/va_layout.c
+@@ -12,6 +12,10 @@
+ #include <asm/insn.h>
+ #include <asm/kvm_mmu.h>
+ 
++#ifdef CONFIG_BHV_VAS
++#include <bhv/interface/hypercall.h>
++#endif
++
+ /*
+  * The LSB of the HYP VA tag
+  */
+@@ -97,8 +101,27 @@ static u32 compute_instruction(int n, u32 rd, u32 rn)
+ 	return insn;
+ }
+ 
+-void __init kvm_update_va_mask(struct alt_instr *alt,
+-			       __le32 *origptr, __le32 *updptr, int nr_inst)
++#ifdef CONFIG_BHV_VAS
++inline void kvm_bhv_alt_patch(__le32 *dest, u32 insn, bhv_patch_arg_t *bhv_arg)
++{
++	__le32 le32_insn = cpu_to_le32(insn);
++	bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++		virt_to_phys((void *)dest);
++	memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &le32_insn,
++	       sizeof(bhv_arg->bhv_patch_patch_arg.src_value));
++	bhv_arg->bhv_patch_patch_arg.size =
++		sizeof(bhv_arg->bhv_patch_patch_arg.src_value);
++	bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++			  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++}
++
++void __init kvm_update_va_mask(struct alt_instr *alt, __le32 *origptr,
++			       __le32 *updptr, int nr_inst,
++			       bhv_patch_arg_t *bhv_arg)
++#else /* CONFIG_BHV_VAS */
++void __init kvm_update_va_mask(struct alt_instr *alt, __le32 *origptr,
++			       __le32 *updptr, int nr_inst)
++#endif /* CONFIG_BHV_VAS */
+ {
+ 	int i;
+ 
+@@ -116,7 +139,12 @@ void __init kvm_update_va_mask(struct alt_instr *alt,
+ 		 * address), NOP everything after masking the kernel VA.
+ 		 */
+ 		if (has_vhe() || (!tag_val && i > 0)) {
++#ifdef CONFIG_BHV_VAS
++			kvm_bhv_alt_patch(&(updptr[i]), aarch64_insn_gen_nop(),
++					  bhv_arg);
++#else /* CONFIG_BHV_VAS */
+ 			updptr[i] = cpu_to_le32(aarch64_insn_gen_nop());
++#endif /* CONFIG_BHV_VAS */
+ 			continue;
+ 		}
+ 
+@@ -127,15 +155,25 @@ void __init kvm_update_va_mask(struct alt_instr *alt,
+ 		insn = compute_instruction(i, rd, rn);
+ 		BUG_ON(insn == AARCH64_BREAK_FAULT);
+ 
++#ifdef CONFIG_BHV_VAS
++		kvm_bhv_alt_patch(&(updptr[i]), insn, bhv_arg);
++#else /* !CONFIG_BHV_VAS */
+ 		updptr[i] = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ 	}
+ }
+ 
+ void *__kvm_bp_vect_base;
+ int __kvm_harden_el2_vector_slot;
+ 
++#ifdef CONFIG_BHV_VAS
++void kvm_patch_vector_branch(struct alt_instr *alt, __le32 *origptr,
++			     __le32 *updptr, int nr_inst,
++			     bhv_patch_arg_t *bhv_arg)
++#else /* CONFIG_BHV_VAS */
+ void kvm_patch_vector_branch(struct alt_instr *alt,
+ 			     __le32 *origptr, __le32 *updptr, int nr_inst)
++#endif /* CONFIG_BHV_VAS */
+ {
+ 	u64 addr;
+ 	u32 insn;
+@@ -170,7 +208,11 @@ void kvm_patch_vector_branch(struct alt_instr *alt,
+ 						-16,
+ 						AARCH64_INSN_VARIANT_64BIT,
+ 						AARCH64_INSN_LDST_STORE_PAIR_PRE_INDEX);
++#ifdef CONFIG_BHV_VAS
++	kvm_bhv_alt_patch(updptr++, insn, bhv_arg);
++#else /* CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ 
+ 	/* movz x0, #(addr & 0xffff) */
+ 	insn = aarch64_insn_gen_movewide(AARCH64_INSN_REG_0,
+@@ -178,15 +220,21 @@ void kvm_patch_vector_branch(struct alt_instr *alt,
+ 					 0,
+ 					 AARCH64_INSN_VARIANT_64BIT,
+ 					 AARCH64_INSN_MOVEWIDE_ZERO);
++#ifdef CONFIG_BHV_VAS
++	kvm_bhv_alt_patch(updptr++, insn, bhv_arg);
++#else /* CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ 
+ 	/* movk x0, #((addr >> 16) & 0xffff), lsl #16 */
+-	insn = aarch64_insn_gen_movewide(AARCH64_INSN_REG_0,
+-					 (u16)(addr >> 16),
+-					 16,
+-					 AARCH64_INSN_VARIANT_64BIT,
++	insn = aarch64_insn_gen_movewide(AARCH64_INSN_REG_0, (u16)(addr >> 16),
++					 16, AARCH64_INSN_VARIANT_64BIT,
+ 					 AARCH64_INSN_MOVEWIDE_KEEP);
++#ifdef CONFIG_BHV_VAS
++	kvm_bhv_alt_patch(updptr++, insn, bhv_arg);
++#else /* CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ 
+ 	/* movk x0, #((addr >> 32) & 0xffff), lsl #32 */
+ 	insn = aarch64_insn_gen_movewide(AARCH64_INSN_REG_0,
+@@ -194,10 +242,18 @@ void kvm_patch_vector_branch(struct alt_instr *alt,
+ 					 32,
+ 					 AARCH64_INSN_VARIANT_64BIT,
+ 					 AARCH64_INSN_MOVEWIDE_KEEP);
++#ifdef CONFIG_BHV_VAS
++	kvm_bhv_alt_patch(updptr++, insn, bhv_arg);
++#else /* CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ 
+ 	/* br x0 */
+ 	insn = aarch64_insn_gen_branch_reg(AARCH64_INSN_REG_0,
+ 					   AARCH64_INSN_BRANCH_NOLINK);
++#ifdef CONFIG_BHV_VAS
++	kvm_bhv_alt_patch(updptr++, insn, bhv_arg);
++#else /* CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ }
 diff --git arch/x86/Kbuild arch/x86/Kbuild
 index 30dec019756b..3235bbc86ff8 100644
 --- arch/x86/Kbuild
@@ -1153,11 +1197,17 @@ index c3d9f56c9018..325e58f61ae8 100644
  source "arch/x86/Kconfig.cpu"
 diff --git arch/x86/bhv/Makefile arch/x86/bhv/Makefile
 new file mode 100644
-index 000000000000..c76796676603
+index 000000000000..e66e83fdb5eb
 --- /dev/null
 +++ arch/x86/bhv/Makefile
-@@ -0,0 +1,8 @@
+@@ -0,0 +1,14 @@
 +# SPDX-License-Identifier: GPL-2.0-only
++
++# Copyright (C) 2022 - BedRock Systems Inc
++# Authors: Sergej Proskurin <sergej@bedrocksystems.com>
++#          Jonas Pfoh <jonas@bedrocksystems.com>
++#          Sebastian Vogl <sebastian@bedrocksystems.com>
++
 +obj-$(CONFIG_BHV_VAS)		:= start.o
 +obj-$(CONFIG_BHV_VAS)		+= init.o
 +obj-$(CONFIG_BHV_VAS)		+= integrity.o
@@ -1167,37 +1217,15 @@ index 000000000000..c76796676603
 +obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
 diff --git arch/x86/bhv/init.c arch/x86/bhv/init.c
 new file mode 100644
-index 000000000000..e2774ff6b889
+index 000000000000..1833c1b75e6d
 --- /dev/null
 +++ arch/x86/bhv/init.c
-@@ -0,0 +1,124 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,102 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Author: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#include <bhv/interface/common.h>
 +#include <bhv/interface/integrity.h>
@@ -1297,28 +1325,15 @@ index 000000000000..e2774ff6b889
 +}
 diff --git arch/x86/bhv/integrity.c arch/x86/bhv/integrity.c
 new file mode 100644
-index 000000000000..9ee52121d032
+index 000000000000..404ad64f53ed
 --- /dev/null
 +++ arch/x86/bhv/integrity.c
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,292 @@
++// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022, BedRock Systems, Inc.
-+ *
-+ * This program is free software; you can redistribute it and/or modify
-+ * it under the terms of the GNU General Public License as published by
-+ * the Free Software Foundation; either version 2 of the License, or
-+ * (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful, but
-+ * WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
-+ * NON INFRINGEMENT.  See the GNU General Public License for more
-+ * details.
-+ *
-+ * You should have received a copy of the GNU General Public License
-+ * along with this program; if not, write to the Free Software
-+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
-+ *
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
 + */
 +
 +#include <asm/io.h>
@@ -1608,37 +1623,17 @@ index 000000000000..9ee52121d032
 +}
 diff --git arch/x86/bhv/patch_alternative.c arch/x86/bhv/patch_alternative.c
 new file mode 100644
-index 000000000000..35e607f3404b
+index 000000000000..dec45eaf6533
 --- /dev/null
 +++ arch/x86/bhv/patch_alternative.c
-@@ -0,0 +1,401 @@
-+/******************************************************************************
-+ * Sebastian Vogl <sebastian@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,381 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sebastian Vogl <sebastian@bedrocksystems.com>
++ *          Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
 +#include <bhv/bhv.h>
 +#include <bhv/vault.h>
 +
@@ -2016,37 +2011,15 @@ index 000000000000..35e607f3404b
 \ No newline at end of file
 diff --git arch/x86/bhv/patch_jump_label.c arch/x86/bhv/patch_jump_label.c
 new file mode 100644
-index 000000000000..c8a74886d324
+index 000000000000..47cc0b8809b9
 --- /dev/null
 +++ arch/x86/bhv/patch_jump_label.c
-@@ -0,0 +1,67 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,45 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#include <asm/bhv/integrity.h>
 +
@@ -2089,28 +2062,14 @@ index 000000000000..c8a74886d324
 +}
 diff --git arch/x86/bhv/start.c arch/x86/bhv/start.c
 new file mode 100644
-index 000000000000..6dbf01d7553e
+index 000000000000..d038b5a2d97e
 --- /dev/null
 +++ arch/x86/bhv/start.c
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,44 @@
++// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022, BedRock Systems, Inc.
-+ *
-+ * This program is free software; you can redistribute it and/or modify
-+ * it under the terms of the GNU General Public License as published by
-+ * the Free Software Foundation; either version 2 of the License, or
-+ * (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful, but
-+ * WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
-+ * NON INFRINGEMENT.  See the GNU General Public License for more
-+ * details.
-+ *
-+ * You should have received a copy of the GNU General Public License
-+ * along with this program; if not, write to the Free Software
-+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
-+ *
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
 + */
 +
 +#include <asm/hypervisor.h>
@@ -2153,37 +2112,15 @@ index 000000000000..6dbf01d7553e
 +}
 diff --git arch/x86/include/asm/bhv/hypercall.h arch/x86/include/asm/bhv/hypercall.h
 new file mode 100644
-index 000000000000..b3b6634b741b
+index 000000000000..5140906c8697
 --- /dev/null
 +++ arch/x86/include/asm/bhv/hypercall.h
-@@ -0,0 +1,48 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,26 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#ifndef __ASM_BHV_HYPERCALL_H__
 +#define __ASM_BHV_HYPERCALL_H__
@@ -2207,28 +2144,14 @@ index 000000000000..b3b6634b741b
 +#endif /* __ASM_BHV_HYPERCALL_H__ */
 diff --git arch/x86/include/asm/bhv/integrity.h arch/x86/include/asm/bhv/integrity.h
 new file mode 100644
-index 000000000000..c9ec507cb9e8
+index 000000000000..f1213d0a8c4c
 --- /dev/null
 +++ arch/x86/include/asm/bhv/integrity.h
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,32 @@
++// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022, BedRock Systems, Inc.
-+ *
-+ * This program is free software; you can redistribute it and/or modify
-+ * it under the terms of the GNU General Public License as published by
-+ * the Free Software Foundation; either version 2 of the License, or
-+ * (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful, but
-+ * WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
-+ * NON INFRINGEMENT.  See the GNU General Public License for more
-+ * details.
-+ *
-+ * You should have received a copy of the GNU General Public License
-+ * along with this program; if not, write to the Free Software
-+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
-+ *
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
 + */
 +
 +#ifndef __ASM_BHV_INTEGRITY_H__
@@ -2259,28 +2182,15 @@ index 000000000000..c9ec507cb9e8
 +#endif /* __ASM_BHV_INTEGRITY_H__ */
 diff --git arch/x86/include/asm/bhv/patch.h arch/x86/include/asm/bhv/patch.h
 new file mode 100644
-index 000000000000..85d848817b5f
+index 000000000000..4927cecdec62
 --- /dev/null
 +++ arch/x86/include/asm/bhv/patch.h
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,59 @@
++// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022, BedRock Systems, Inc.
-+ *
-+ * This program is free software; you can redistribute it and/or modify
-+ * it under the terms of the GNU General Public License as published by
-+ * the Free Software Foundation; either version 2 of the License, or
-+ * (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful, but
-+ * WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
-+ * NON INFRINGEMENT.  See the GNU General Public License for more
-+ * details.
-+ *
-+ * You should have received a copy of the GNU General Public License
-+ * along with this program; if not, write to the Free Software
-+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
-+ *
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
 + */
 +
 +#ifndef __ASM_BHV_PATCH_H__
@@ -2717,37 +2627,15 @@ index a774361f28d4..4b1e92cdc356 100644
  
 diff --git include/bhv/bhv.h include/bhv/bhv.h
 new file mode 100644
-index 000000000000..b1caf808f97b
+index 000000000000..d17e3b178a14
 --- /dev/null
 +++ include/bhv/bhv.h
-@@ -0,0 +1,53 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,31 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_BHV_H__
 +#define __BVH_BHV_H__
@@ -2776,37 +2664,15 @@ index 000000000000..b1caf808f97b
 +#endif /* __BVH_BHV_H__ */
 diff --git include/bhv/init.h include/bhv/init.h
 new file mode 100644
-index 000000000000..79170b4c84ea
+index 000000000000..0b9a72e48ea9
 --- /dev/null
 +++ include/bhv/init.h
-@@ -0,0 +1,43 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,21 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_INIT_H__
 +#define __BHV_INIT_H__
@@ -2825,37 +2691,17 @@ index 000000000000..79170b4c84ea
 +#endif /* __BHV_INIT_H__ */
 diff --git include/bhv/integrity.h include/bhv/integrity.h
 new file mode 100644
-index 000000000000..b7cd160d5bd7
+index 000000000000..fb92d1c39899
 --- /dev/null
 +++ include/bhv/integrity.h
-@@ -0,0 +1,201 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,181 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_INTEGRITY_H__
 +#define __BHV_INTEGRITY_H__
@@ -3032,37 +2878,15 @@ index 000000000000..b7cd160d5bd7
 +#endif /* __BHV_INTEGRITY_H__ */
 diff --git include/bhv/interface/common.h include/bhv/interface/common.h
 new file mode 100644
-index 000000000000..875bbd957e71
+index 000000000000..8c4a1805bcbf
 --- /dev/null
 +++ include/bhv/interface/common.h
-@@ -0,0 +1,50 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,28 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_INTERFACE_COMMON_H__
 +#define __BHV_INTERFACE_COMMON_H__
@@ -3088,40 +2912,15 @@ index 000000000000..875bbd957e71
 +#endif /* __BHV_INTERFACE_COMMON_H__ */
 diff --git include/bhv/interface/hypercall.h include/bhv/interface/hypercall.h
 new file mode 100644
-index 000000000000..8461ea3b0750
+index 000000000000..d9c92066f040
 --- /dev/null
 +++ include/bhv/interface/hypercall.h
-@@ -0,0 +1,64 @@
-+/******************************************************************************
-+ * hypercall.h
-+ *
-+ * Linux-specific hypervisor handling.
-+ *
-+ * Sergej Proskurin <sergej@bedrocksystems.com>, BedRock Systems, 2021
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
+@@ -0,0 +1,39 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Jonas Pfoh <jonas@bedrocksystems.com>
 + */
 +
 +#ifndef _ASM_INTERFACE_BHV_HYPERCALL_H
@@ -3158,37 +2957,15 @@ index 000000000000..8461ea3b0750
 +#endif /* _ASM_INTERFACE_BHV_HYPERCALL_H */
 diff --git include/bhv/interface/init.h include/bhv/interface/init.h
 new file mode 100644
-index 000000000000..da3300a0543a
+index 000000000000..0a635fea59e7
 --- /dev/null
 +++ include/bhv/interface/init.h
-@@ -0,0 +1,51 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,29 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_INTERFACE_INIT_H__
 +#define __BHV_INTERFACE_INIT_H__
@@ -3215,37 +2992,16 @@ index 000000000000..da3300a0543a
 +#endif /* __BHV_INTERFACE_INIT_H__ */
 diff --git include/bhv/interface/integrity.h include/bhv/interface/integrity.h
 new file mode 100644
-index 000000000000..5c98f47e0c2a
+index 000000000000..d7ddf79d1790
 --- /dev/null
 +++ include/bhv/interface/integrity.h
-@@ -0,0 +1,114 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,93 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_INTERFACE_INTEGRITY_H__
 +#define __BHV_INTERFACE_INTEGRITY_H__
@@ -3335,37 +3091,16 @@ index 000000000000..5c98f47e0c2a
 +#endif /* __BHV_INTERFACE_INTEGRITY_H__ */
 diff --git include/bhv/interface/patch.h include/bhv/interface/patch.h
 new file mode 100644
-index 000000000000..8c5374fe9b22
+index 000000000000..9c5db60d5ecd
 --- /dev/null
 +++ include/bhv/interface/patch.h
-@@ -0,0 +1,58 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,37 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_INTERFACE_PATCH_H__
 +#define __BHV_INTERFACE_PATCH_H__
@@ -3399,37 +3134,15 @@ index 000000000000..8c5374fe9b22
 +#endif /* __BHV_INTERFACE_PATCH_H__ */
 diff --git include/bhv/interface/vault.h include/bhv/interface/vault.h
 new file mode 100644
-index 000000000000..df4d942b6502
+index 000000000000..075752c19838
 --- /dev/null
 +++ include/bhv/interface/vault.h
-@@ -0,0 +1,36 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_INTERFACE_VAULT_H__
 +#define __BHV_INTERFACE_VAULT_H__
@@ -3441,37 +3154,16 @@ index 000000000000..df4d942b6502
 +#endif /* __BHV_INTERFACE_VAULT_H__ */
 diff --git include/bhv/module.h include/bhv/module.h
 new file mode 100644
-index 000000000000..827ca2740313
+index 000000000000..6a099f891013
 --- /dev/null
 +++ include/bhv/module.h
-@@ -0,0 +1,68 @@
-+/******************************************************************************
-+ * Sergej Proskurin <sergej@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,47 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_MODULE_H__
 +#define __BHV_MODULE_H__
@@ -3515,37 +3207,16 @@ index 000000000000..827ca2740313
 +#endif /* __BHV_MODULE_H__ */
 diff --git include/bhv/patch.h include/bhv/patch.h
 new file mode 100644
-index 000000000000..6fdcc3023aa2
+index 000000000000..4e0db069c9e0
 --- /dev/null
 +++ include/bhv/patch.h
-@@ -0,0 +1,98 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,77 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_PATCH_H__
 +#define __BHV_PATCH_H__
@@ -3619,37 +3290,15 @@ index 000000000000..6fdcc3023aa2
 +#endif /* __BHV_PATCH_H__ */
 diff --git include/bhv/start.h include/bhv/start.h
 new file mode 100644
-index 000000000000..a9bdc3e7a6f1
+index 000000000000..67c90a54cd3e
 --- /dev/null
 +++ include/bhv/start.h
-@@ -0,0 +1,49 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,27 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_START_H__
 +#define __BHV_START_H__
@@ -3675,37 +3324,15 @@ index 000000000000..a9bdc3e7a6f1
 \ No newline at end of file
 diff --git include/bhv/vault.h include/bhv/vault.h
 new file mode 100644
-index 000000000000..28094477b143
+index 000000000000..902647976c5b
 --- /dev/null
 +++ include/bhv/vault.h
-@@ -0,0 +1,65 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,43 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
 +
 +#ifndef __BHV_VAULT_H__
 +#define __BHV_VAULT_H__
@@ -3850,11 +3477,16 @@ index 000000000000..f53bd2dcba90
 +	  fails.
 diff --git kernel/bhv/Makefile kernel/bhv/Makefile
 new file mode 100644
-index 000000000000..c9e78b250f06
+index 000000000000..196d2a796d56
 --- /dev/null
 +++ kernel/bhv/Makefile
-@@ -0,0 +1,11 @@
-+# SPDX-License-Identifier: GPL-2.0
+@@ -0,0 +1,16 @@
++# SPDX-License-Identifier: GPL-2.0-only
++
++# Copyright (C) 2022 - BedRock Systems Inc
++# Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++#          Sergej Proskurin <sergej@bedrocksystems.com>
++#          Sebastian Vogl <sebastian@bedrocksystems.com>
 +
 +obj-$(CONFIG_BHV_VAS)		:= bhv.o
 +obj-$(CONFIG_BHV_VAS)		+= start.o
@@ -3867,28 +3499,14 @@ index 000000000000..c9e78b250f06
 +obj-$(CONFIG_BHV_VAS)		+= module.o
 diff --git kernel/bhv/bhv.c kernel/bhv/bhv.c
 new file mode 100644
-index 000000000000..a7ea3a298f66
+index 000000000000..8990ca93b6b7
 --- /dev/null
 +++ kernel/bhv/bhv.c
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,15 @@
++// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022, BedRock Systems, Inc.
-+ *
-+ * This program is free software; you can redistribute it and/or modify
-+ * it under the terms of the GNU General Public License as published by
-+ * the Free Software Foundation; either version 2 of the License, or
-+ * (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful, but
-+ * WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
-+ * NON INFRINGEMENT.  See the GNU General Public License for more
-+ * details.
-+ *
-+ * You should have received a copy of the GNU General Public License
-+ * along with this program; if not, write to the Free Software
-+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
-+ *
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
 + */
 +
 +#include <bhv/integrity.h>
@@ -3903,37 +3521,17 @@ index 000000000000..a7ea3a298f66
 \ No newline at end of file
 diff --git kernel/bhv/init.c kernel/bhv/init.c
 new file mode 100644
-index 000000000000..cf4928572c28
+index 000000000000..c8af3f20bf6b
 --- /dev/null
 +++ kernel/bhv/init.c
-@@ -0,0 +1,108 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,88 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ */
 +
 +#include <asm/io.h>
 +#include <asm/sections.h>
@@ -4017,37 +3615,16 @@ index 000000000000..cf4928572c28
 +}
 diff --git kernel/bhv/integrity.c kernel/bhv/integrity.c
 new file mode 100644
-index 000000000000..e138656031ac
+index 000000000000..25ac14dfd0c1
 --- /dev/null
 +++ kernel/bhv/integrity.c
-@@ -0,0 +1,152 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,131 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ */
 +
 +#include <linux/types.h>
 +#include <asm/io.h>
@@ -4175,10 +3752,17 @@ index 000000000000..e138656031ac
 +}
 diff --git kernel/bhv/module.c kernel/bhv/module.c
 new file mode 100644
-index 000000000000..d2373eca626d
+index 000000000000..75304a3d8cef
 --- /dev/null
 +++ kernel/bhv/module.c
-@@ -0,0 +1,391 @@
+@@ -0,0 +1,403 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
 +#include <linux/module.h>
 +#include <linux/mm.h>
 +#include <linux/kernel.h>
@@ -4200,6 +3784,7 @@ index 000000000000..d2373eca626d
 +				       flags);
 +}
 +
++#ifdef CONFIG_MODULES
 +static int _bhv_link_node_op_update(struct list_head *head, uint64_t pfn,
 +				    uint64_t unused, uint32_t type,
 +				    uint64_t flags)
@@ -4213,6 +3798,7 @@ index 000000000000..d2373eca626d
 +{
 +	return bhv_link_node_op_remove(head, pfn << PAGE_SHIFT);
 +}
++#endif /* CONFIG_MODULES */
 +
 +static void bhv_prepare_mod_section(struct list_head *head, const void *base,
 +				    uint64_t size, uint32_t type,
@@ -4293,6 +3879,16 @@ index 000000000000..d2373eca626d
 +				_bhv_link_node_op_create);
 +}
 +
++static void bhv_release_memory_by_owner(uint64_t owner)
++{
++	int rc = bhv_remove_kern_phys_mem_region_by_owner_hyp(owner);
++	if (rc) {
++		pr_err("%s: Cannot remove the module's memory regions",
++		       __FUNCTION__);
++	}
++}
++
++#ifdef CONFIG_MODULES
 +static void bhv_update_section(struct list_head *head, const void *base,
 +			       uint64_t size, uint32_t type, uint64_t flags)
 +{
@@ -4320,7 +3916,8 @@ index 000000000000..d2373eca626d
 +
 +	/* Prepare the module region's .text section. */
 +	bhv_create_section(head, layout->base, layout->text_size,
-+			   BHV_MEM_TYPE_CODE, BHV_MEM_FLAGS_TRANSIENT);
++			   BHV_MEM_TYPE_CODE_PATCHABLE,
++			   BHV_MEM_FLAGS_TRANSIENT);
 +
 +	/* Prepare the module region's .rodata section. */
 +	if (layout->ro_size - layout->text_size) {
@@ -4499,19 +4096,11 @@ index 000000000000..d2373eca626d
 +	bhv_complete_free_init(&mod->init_layout);
 +}
 +
-+static void bhv_release_memory_by_owner(uint64_t owner)
-+{
-+	int rc = bhv_remove_kern_phys_mem_region_by_owner_hyp(owner);
-+	if (rc) {
-+		pr_err("%s: Cannot remove the module's memory regions",
-+		       __FUNCTION__);
-+	}
-+}
-+
 +void bhv_module_unload(const struct module *mod)
 +{
 +	bhv_release_memory_by_owner((uint64_t)mod);
 +}
++#endif /* CONFIG_MODULES */
 +
 +static void bhv_bpf_protect(const void *base, uint64_t size, uint32_t type,
 +			    uint64_t flags)
@@ -4572,37 +4161,17 @@ index 000000000000..d2373eca626d
 +}
 diff --git kernel/bhv/patch_alternative.c kernel/bhv/patch_alternative.c
 new file mode 100644
-index 000000000000..a307788a9650
+index 000000000000..165d0739b5d6
 --- /dev/null
 +++ kernel/bhv/patch_alternative.c
-@@ -0,0 +1,195 @@
-+/******************************************************************************
-+ * Sebastian Vogl <sebastian@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,181 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sebastian Vogl <sebastian@bedrocksystems.com>
++ *          Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
 +#include <bhv/bhv.h>
 +#include <bhv/vault.h>
 +#include <bhv/patch.h>
@@ -4748,12 +4317,15 @@ index 000000000000..a307788a9650
 +			   void *arch)
 +{
 +	int rv = 0;
++	unsigned long flags;
 +	static bhv_patch_arg_t bhv_arg;
 +	struct alt_inst_search search = { .begin = begin, .end = end };
 +
 +	bhv_alternatives_lock();
++	local_irq_save(flags);
 +	rv = bhv_alternatives_apply_vault(
 +		&search, arch, bhv_alternatives_find_by_alt, &bhv_arg);
++	local_irq_restore(flags);
 +	bhv_alternatives_unlock();
 +
 +	return rv;
@@ -4763,10 +4335,13 @@ index 000000000000..a307788a9650
 +					 bhv_alternatives_filter_t filter)
 +{
 +	int rv = 0;
++	unsigned long flags;
 +	static bhv_patch_arg_t bhv_arg;
 +
 +	bhv_alternatives_lock();
++	local_irq_save(flags);
 +	rv = bhv_alternatives_apply_vault(search_param, arch, filter, &bhv_arg);
++	local_irq_restore(flags);
 +	bhv_alternatives_unlock();
 +
 +	return rv;
@@ -4774,39 +4349,20 @@ index 000000000000..a307788a9650
 \ No newline at end of file
 diff --git kernel/bhv/patch_jump_label.c kernel/bhv/patch_jump_label.c
 new file mode 100644
-index 000000000000..85cf581778e6
+index 000000000000..5d90a14e7a73
 --- /dev/null
 +++ kernel/bhv/patch_jump_label.c
-@@ -0,0 +1,171 @@
-+/******************************************************************************
-+ * Jonas Pfoh <jonas@bedrocksystems.com>, BedRock Systems Inc, 2022
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License version 2
-+ * as published by the Free Software Foundation; or, when distributed
-+ * separately from the Linux kernel or incorporated into other
-+ * software packages, subject to the following license:
-+ *
-+ * Permission is hereby granted, free of charge, to any person obtaining a copy
-+ * of this source file (the "Software"), to deal in the Software without
-+ * restriction, including without limitation the rights to use, copy, modify,
-+ * merge, publish, distribute, sublicense, and/or sell copies of the Software,
-+ * and to permit persons to whom the Software is furnished to do so, subject to
-+ * the following conditions:
-+ *
-+ * The above copyright notice and this permission notice shall be included in
-+ * all copies or substantial portions of the Software.
-+ *
-+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-+ * IN THE SOFTWARE.
-+ ******************************************************************************/
+@@ -0,0 +1,177 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
 +#include <linux/jump_label.h>
 +#include <linux/module.h>
++#include <linux/mm.h>
++#include <linux/irqflags.h>
 +#include <asm/bhv/patch.h>
 +#include <bhv/interface/patch.h>
 +#include <bhv/patch.h>
@@ -4818,7 +4374,9 @@ index 000000000000..85cf581778e6
 +struct bhv_static_key_mod {
 +	struct jump_entry *entries_start;
 +	struct jump_entry *entries_stop;
++#ifdef CONFIG_MODULES
 +	struct module *mod;
++#endif /* CONFIG_MODULES */
 +	struct list_head list;
 +};
 +
@@ -4832,6 +4390,7 @@ index 000000000000..85cf581778e6
 +	mutex_unlock(&bhv_jump_label_mutex);
 +}
 +
++#ifdef CONFIG_MODULES
 +int bhv_jump_label_add_module(struct module *mod)
 +{
 +	struct bhv_static_key_mod *n;
@@ -4862,6 +4421,7 @@ index 000000000000..85cf581778e6
 +	}
 +	bhv_jump_label_unlock();
 +}
++#endif /* CONFIG_MODULES */
 +
 +enum jump_label_type __bhv_text bhv_jump_label_type(struct jump_entry *entry)
 +{
@@ -4874,19 +4434,35 @@ index 000000000000..85cf581778e6
 +}
 +
 +bool __bhv_text validate_jmp_labels(struct jump_entry *entry,
-+				    const void *opcode, size_t len)
++				    const void *opcode, size_t len,
++				    uint64_t *dest_phys_addr)
 +{
 +	struct bhv_static_key_mod *i;
 +
 +	if (entry >= __start___jump_table && entry < __stop___jump_table) {
++		*dest_phys_addr = virt_to_phys((void *)jump_entry_code(entry));
 +		return bhv_jump_label_validate_opcode(
 +			entry, bhv_jump_label_type(entry), opcode, len);
 +	}
 +
 +	list_for_each_entry (i, &bhv_static_key_mod_head, list) {
-+		if (entry >= i->entries_start && entry < i->entries_stop)
++		if (entry >= i->entries_start && entry < i->entries_stop) {
++			uint64_t offset =
++				jump_entry_code(entry) & (PAGE_SIZE - 1);
++			struct page *p =
++				vmalloc_to_page((void *)jump_entry_code(entry));
++			if (p == NULL) {
++				pr_err("%s: Cannot translate addr @ 0x%llx",
++				       __FUNCTION__,
++				       (uint64_t)((void *)jump_entry_code(
++					       entry)));
++				return false;
++			}
++			*dest_phys_addr =
++				(page_to_pfn(p) << PAGE_SHIFT) | offset;
 +			return bhv_jump_label_validate_opcode(
 +				entry, bhv_jump_label_type(entry), opcode, len);
++		}
 +	}
 +
 +	return false;
@@ -4899,6 +4475,7 @@ index 000000000000..85cf581778e6
 +	int rv = 0;
 +	unsigned long r;
 +	bool validation_ok;
++	uint64_t dest_phys_addr;
 +
 +	rv = bhv_vault_open_hyp();
 +	if (rv) {
@@ -4910,23 +4487,24 @@ index 000000000000..85cf581778e6
 +		return -E2BIG;
 +	}
 +
-+	bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
-+		virt_to_phys((void *)jump_entry_code(entry));
 +	memcpy(bhv_arg->bhv_patch_patch_arg.src_value, opcode, len);
 +	bhv_arg->bhv_patch_patch_arg.size = (uint64_t)len;
 +
-+	validation_ok = validate_jmp_labels(
-+		entry, bhv_arg->bhv_patch_patch_arg.src_value, len);
++	validation_ok =
++		validate_jmp_labels(entry,
++				    bhv_arg->bhv_patch_patch_arg.src_value, len,
++				    &dest_phys_addr);
 +	if (!validation_ok) {
 +		bhv_vault_close_hyp();
 +		return -EACCES;
 +	}
 +
++	bhv_arg->bhv_patch_patch_arg.dest_phys_addr = dest_phys_addr;
++
 +	r = bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH, BHV_VAS_PATCH_OP_PATCH,
 +			      bhv_arg);
-+	if (r) {
++	if (r)
 +		panic("BHV vault close failure! hypercall returned %lu", r);
-+	}
 +	return 0;
 +}
 +
@@ -4934,6 +4512,7 @@ index 000000000000..85cf581778e6
 +			 size_t len)
 +{
 +	int rv = 0;
++	unsigned long flags;
 +
 +	/*
 +	 * This allocation assumes synchronization around
@@ -4944,35 +4523,25 @@ index 000000000000..85cf581778e6
 +	static bhv_patch_arg_t bhv_arg;
 +
 +	bhv_jump_label_lock();
++	local_irq_save(flags);
 +	rv = bhv_vault_patch_jump_label(entry, opcode, len, &bhv_arg);
++	local_irq_restore(flags);
 +	bhv_jump_label_unlock();
 +
 +	return rv;
 +}
 diff --git kernel/bhv/start.c kernel/bhv/start.c
 new file mode 100644
-index 000000000000..d9b7c25c54ec
+index 000000000000..3e1fd9f25f20
 --- /dev/null
 +++ kernel/bhv/start.c
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,68 @@
++// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022, BedRock Systems, Inc.
-+ *
-+ * This program is free software; you can redistribute it and/or modify
-+ * it under the terms of the GNU General Public License as published by
-+ * the Free Software Foundation; either version 2 of the License, or
-+ * (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful, but
-+ * WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
-+ * NON INFRINGEMENT.  See the GNU General Public License for more
-+ * details.
-+ *
-+ * You should have received a copy of the GNU General Public License
-+ * along with this program; if not, write to the Free Software
-+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
-+ *
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
 + */
 +
 +#include <asm/sections.h>
