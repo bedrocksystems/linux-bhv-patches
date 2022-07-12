@@ -2743,7 +2743,7 @@ index 000000000000..0b9a72e48ea9
 +#endif /* __BHV_INIT_H__ */
 diff --git include/bhv/integrity.h include/bhv/integrity.h
 new file mode 100644
-index 000000000000..4d586dbdae50
+index 000000000000..71a1881ea194
 --- /dev/null
 +++ include/bhv/integrity.h
 @@ -0,0 +1,194 @@
@@ -2900,7 +2900,7 @@ index 000000000000..4d586dbdae50
 +
 +#else /* CONFIG_BHV_VAS */
 +
-+bool bhv_integrity_is_enabled(void)
++static inline bool bhv_integrity_is_enabled(void)
 +{
 +	return false;
 +}
