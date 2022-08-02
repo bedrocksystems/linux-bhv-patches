@@ -71,10 +71,10 @@ index 000000000000..70a504119bab
 +}
 diff --git arch/arm64/bhv/integrity.c arch/arm64/bhv/integrity.c
 new file mode 100644
-index 000000000000..0fe05c6b29df
+index 000000000000..454a5689442c
 --- /dev/null
 +++ arch/arm64/bhv/integrity.c
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,68 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -109,8 +109,10 @@ index 000000000000..0fe05c6b29df
 +		return -ENOMEM;
 +	}
 +
-+	BUG_ON(vdso_start < __start_rodata || vdso_start >= __end_rodata);
-+	BUG_ON(vdso_end < __start_rodata || vdso_end >= __end_rodata);
++	BUG_ON((uint64_t)vdso_start < (uint64_t)__start_rodata ||
++	       (uint64_t)vdso_start >= (uint64_t)__end_rodata);
++	BUG_ON((uint64_t)vdso_end < (uint64_t)__start_rodata ||
++	       (uint64_t)vdso_end >= (uint64_t)__end_rodata);
 +
 +	/* Add ro_data section
 +	 * NOTE: ro_after_init is contained in this section as well
@@ -1209,6 +1211,28 @@ index e0404bcab019..f7c85c7f4291 100644
  	*updptr++ = cpu_to_le32(insn);
 +#endif /* CONFIG_BHV_VAS */
  }
+diff --git arch/arm64/mm/init.c arch/arm64/mm/init.c
+index c0a7f0d90b39..ced3f3d0bc93 100644
+--- arch/arm64/mm/init.c
++++ arch/arm64/mm/init.c
+@@ -43,6 +43,9 @@
+ #include <asm/tlb.h>
+ #include <asm/alternative.h>
+ 
++#include <bhv/bhv.h>
++#include <bhv/start.h>
++
+ /*
+  * We need to be able to catch inadvertent references to memstart_addr
+  * that occur (potentially in generic code) before arm64_memblock_init()
+@@ -564,6 +567,7 @@ void __init mem_init(void)
+ 
+ void free_initmem(void)
+ {
++	bhv_start();
+ 	free_reserved_area(lm_alias(__init_begin),
+ 			   lm_alias(__init_end),
+ 			   POISON_FREE_INITMEM, "unused kernel");
 diff --git arch/x86/Kbuild arch/x86/Kbuild
 index 30dec019756b..3235bbc86ff8 100644
 --- arch/x86/Kbuild
@@ -2625,6 +2649,29 @@ index bf9e0adb5b7e..58c5485e47d4 100644
  	/* BSS */
  	. = ALIGN(PAGE_SIZE);
  	.bss : AT(ADDR(.bss) - LOAD_OFFSET) {
+diff --git arch/x86/mm/init.c arch/x86/mm/init.c
+index c7a47603537f..be0b8e625e66 100644
+--- arch/x86/mm/init.c
++++ arch/x86/mm/init.c
+@@ -36,6 +36,9 @@
+ 
+ #include "mm_internal.h"
+ 
++#include <bhv/bhv.h>
++#include <bhv/start.h>
++
+ /*
+  * Tables translating between page_cache_type_t and pte encoding.
+  *
+@@ -919,6 +922,8 @@ void __ref free_initmem(void)
+ 
+ 	mem_encrypt_free_decrypted_mem();
+ 
++	bhv_start();
++
+ 	free_kernel_image_pages("unused kernel image (initmem)",
+ 				&__init_begin, &__init_end);
+ }
 diff --git include/asm-generic/sections.h include/asm-generic/sections.h
 index d16302d3eb59..5ce32b4ce2e0 100644
 --- include/asm-generic/sections.h
@@ -2665,6 +2712,64 @@ index a774361f28d4..4b1e92cdc356 100644
  /* Section used for early init (in .S files) */
  #define HEAD_TEXT  KEEP(*(.head.text))
  
+diff --git include/bhv/acl.h include/bhv/acl.h
+new file mode 100644
+index 000000000000..9f507a87a668
+--- /dev/null
++++ include/bhv/acl.h
+@@ -0,0 +1,51 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sebastian Vogl <sebastian@bedrocksystems.com>
++ *          Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
++#ifndef __BHV_ACL_H__
++#define __BHV_ACL_H__
++
++#ifdef CONFIG_BHV_VAS
++#include <linux/init.h>
++
++#include <bhv/bhv.h>
++#include <bhv/interface/common.h>
++
++void __init bhv_acl_mm_init(void);
++
++static inline bool bhv_acl_is_proc_acl_enabled(void)
++{
++	if (!is_bhv_initialized() || bhv_configuration_bitmap == NULL)
++		return false;
++
++	return (bool)test_bit(BHV_CONFIG_PROC_ACL, bhv_configuration_bitmap);
++}
++
++static inline bool bhv_acl_is_driver_acl_enabled(void)
++{
++	if (!is_bhv_initialized() || bhv_configuration_bitmap == NULL)
++		return false;
++
++	return (bool)test_bit(BHV_CONFIG_DRIVER_ACL, bhv_configuration_bitmap);
++}
++
++bool bhv_block_driver(const char *target);
++bool bhv_block_process(const char *target);
++
++#else /* CONFIG_BHV_VAS */
++
++static inline bool bhv_acl_is_proc_acl_enabled(void)
++{
++	return false;
++}
++
++static inline bool bhv_acl_is_driver_acl_enabled(void)
++{
++	return false;
++}
++
++#endif /* CONFIG_BHV_VAS */
++#endif /* __BHV_ACL_H__ */
+\ No newline at end of file
 diff --git include/bhv/bhv.h include/bhv/bhv.h
 new file mode 100644
 index 000000000000..b1eecdd1cf5c
@@ -2714,6 +2819,217 @@ index 000000000000..b1eecdd1cf5c
 +#endif /* CONFIG_BHV_VAS */
 +
 +#endif /* __BHV_BHV_H__ */
+diff --git include/bhv/bhv_print.h include/bhv/bhv_print.h
+new file mode 100644
+index 000000000000..35d267d47d64
+--- /dev/null
++++ include/bhv/bhv_print.h
+@@ -0,0 +1,26 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sebastian Vogl <sebastian@bedrocksystems.com>
++ */
++
++#ifndef __BHV_BHV_PRINT_H__
++#define __BHV_BHV_PRINT_H__
++
++#ifdef CONFIG_BHV_VAS
++
++// Common print prefix
++#ifndef pr_fmt
++#define pr_fmt(fmt) "[BHV-VAS] " fmt
++#endif
++
++#ifdef CONFIG_BHV_VAS_DEBUG
++#define bhv_debug(fmt, ...)                                                    \
++	printk(KERN_DEBUG pr_fmt("[DEBUG] " fmt), ##__VA_ARGS__)
++#else
++#define bhv_debug(fmt, ...) no_printk(KERN_DEBUG pr_fmt(fmt), ##__VA_ARGS__)
++#endif /* CONFIG_BHV_VAS_DEBUG */
++
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __BHV_BHV_PRINT_H__ */
+\ No newline at end of file
+diff --git include/bhv/creds.h include/bhv/creds.h
+new file mode 100644
+index 000000000000..81a73366fb15
+--- /dev/null
++++ include/bhv/creds.h
+@@ -0,0 +1,79 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sergej Proskurin <sergej@bedrocksystems.com>
++ */
++
++#ifndef __BHV_CREDS_H__
++#define __BHV_CREDS_H__
++
++#include <linux/sched.h>
++
++#include <bhv/bhv.h>
++#include <bhv/interface/common.h>
++#include <bhv/interface/init.h>
++
++#ifdef CONFIG_BHV_VAS
++
++static inline bool bhv_cred_is_enabled(void)
++{
++	if (!is_bhv_initialized())
++		return false;
++
++	return !!test_bit(BHV_CONFIG_CREDS, bhv_configuration_bitmap);
++}
++
++
++int bhv_cred_assign(struct task_struct *t, uint64_t clone_flags);
++int bhv_cred_assign_priv(struct cred *c, struct task_struct *daemon);
++void bhv_cred_commit(struct cred *c);
++void bhv_cred_release(struct cred *c);
++int bhv_cred_verify(struct task_struct *t);
++
++int __init bhv_cred_init(void);
++void __init bhv_cred_mm_init(void);
++
++#else /* CONFIG_BHV_VAS */
++
++static inline int bhv_cred_init(void)
++{
++	return 0;
++}
++
++static inline bool bhv_cred_is_enabled(void)
++{
++	return false;
++}
++
++static inline int bhv_cred_assign(struct task_struct *t, uint64_t clone_flags)
++{
++	return 0;
++}
++
++static inline int bhv_cred_assign_priv(struct cred *c, struct task_struct *d)
++{
++	return 0;
++}
++
++static inline void bhv_cred_commit(struct cred *c)
++{
++}
++
++static inline void bhv_cred_release(struct cred *c)
++{
++}
++
++static inline int bhv_cred_verify(struct task_struct *t)
++{
++	return 0;
++}
++
++static inline void bhv_cred_mm_init(void)
++{
++}
++
++
++
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __BHV_CREDS_H__ */
+diff --git include/bhv/guestlog.h include/bhv/guestlog.h
+new file mode 100644
+index 000000000000..f7ab25e0c726
+--- /dev/null
++++ include/bhv/guestlog.h
+@@ -0,0 +1,86 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ */
++#ifndef __BHV_GUESTLOG_H__
++#define __BHV_GUESTLOG_H__
++
++#include <linux/types.h>
++#include <bhv/bhv.h>
++#include <bhv/interface/common.h>
++#include <bhv/interface/guestlog.h>
++
++extern bhv_guestlog_config_t bhv_guestlog_config __ro_after_init;
++
++void __init bhv_guestlog_init(void);
++
++static inline bool bhv_guestlog_enabled(void)
++{
++	if (!is_bhv_initialized() || bhv_configuration_bitmap == NULL)
++		return false;
++
++	return (bool)test_bit(BHV_CONFIG_LOGGING, bhv_configuration_bitmap);
++}
++
++static inline bool bhv_guestlog_log_process_events(void)
++{
++	if (!bhv_guestlog_enabled())
++		return false;
++
++	if (!bhv_guestlog_config.valid ||
++	    !test_bit(BHV_GUESTLOG_CONFIG_LOG_PROCESS_EVENTS,
++		      (unsigned long *)&bhv_guestlog_config.log_bitmap))
++		return false;
++
++	return true;
++}
++
++static inline bool bhv_guestlog_log_driver_events(void)
++{
++	if (!bhv_guestlog_enabled())
++		return false;
++
++	if (!bhv_guestlog_config.valid ||
++	    !test_bit(BHV_GUESTLOG_CONFIG_LOG_DRIVER_EVENTS,
++		      (unsigned long *)&bhv_guestlog_config.log_bitmap))
++		return false;
++
++	return true;
++}
++
++static inline uint16_t bhv_guestlog_calc_msg_sz(uint16_t type, size_t buf_sz)
++{
++	switch (type) {
++	case BHV_GUESTLOG_MSG_TYPE_STR:
++		return sizeof(guestlog_msg_header_t) + buf_sz;
++	case BHV_GUESTLOG_MSG_TYPE_PROCESS_FORK:
++		return sizeof(guestlog_msg_header_t) +
++		       sizeof(guestlog_msg_process_fork_t) + buf_sz;
++	case BHV_GUESTLOG_MSG_TYPE_PROCESS_EXEC:
++		return sizeof(guestlog_msg_header_t) +
++		       sizeof(guestlog_msg_process_exec_t) + buf_sz;
++	case BHV_GUESTLOG_MSG_TYPE_PROCESS_EXIT:
++		return sizeof(guestlog_msg_header_t) +
++		       sizeof(guestlog_msg_process_exit_t) + buf_sz;
++	case BHV_GUESTLOG_MSG_TYPE_DRIVER_LOAD:
++		return sizeof(guestlog_msg_header_t) +
++		       sizeof(guestlog_msg_driver_load_t) + buf_sz;
++	default:
++		return 0;
++	}
++}
++
++int bhv_guestlog_log_str(char *fmt, ...);
++int bhv_guestlog_log_process_fork(uint32_t child_pid, const char *child_comm,
++				  uint32_t parent_pid, const char *parent_comm);
++int bhv_guestlog_log_process_exec(uint32_t pid, uint32_t parent_pid,
++				  const char *comm);
++int bhv_guestlog_log_process_exit(uint32_t pid, uint32_t parent_pid,
++				  const char *comm);
++int bhv_guestlog_log_driver_load(const char *name);
++void bhv_guestlog_start(void);
++
++#endif /* __BHV_GUESTLOG_H__ */
+\ No newline at end of file
 diff --git include/bhv/init.h include/bhv/init.h
 new file mode 100644
 index 000000000000..0b9a72e48ea9
@@ -2941,12 +3257,51 @@ index 000000000000..71a1881ea194
 +#endif /* CONFIG_BHV_VAS */
 +
 +#endif /* __BHV_INTEGRITY_H__ */
+diff --git include/bhv/interface/acl.h include/bhv/interface/acl.h
+new file mode 100644
+index 000000000000..c6822e3027c2
+--- /dev/null
++++ include/bhv/interface/acl.h
+@@ -0,0 +1,33 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sebastian Vogl <sebastian@bedrocksystems.com>
++ *          Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
++#ifndef __BHV_INTERFACE_ACL_H__
++#define __BHV_INTERFACE_ACL_H__
++
++#include <linux/types.h>
++
++/* BHV VAS ACL BACKEND OPS */
++#define BHV_VAS_ACL_OP_INIT_PROC_ACL 0U
++#define BHV_VAS_ACL_OP_INIT_DRIVER_ACL 1U
++#define BHV_VAS_ACL_OP_VIOLATION_PROC_ACL 2U
++#define BHV_VAS_ACL_OP_VIOLATION_DRIVER_ACL 3U
++
++typedef struct {
++	uint8_t valid;
++	uint8_t is_allow;
++	uint16_t num_pages;
++	uint16_t list_len;
++	uint16_t padding;
++	uint64_t list[];
++} __attribute__((__packed__)) bhv_acl_config_t;
++
++typedef struct {
++	uint64_t name;
++	uint16_t name_len;
++	uint8_t block;
++} __attribute__((__packed__)) bhv_acl_violation_t;
++#endif /* __BHV_INTERFACE_ACL_H__ */
 diff --git include/bhv/interface/common.h include/bhv/interface/common.h
 new file mode 100644
-index 000000000000..eb0d43640d19
+index 000000000000..f6e5c8f52423
 --- /dev/null
 +++ include/bhv/interface/common.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,38 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -2970,14 +3325,205 @@ index 000000000000..eb0d43640d19
 +#define BHV_VAS_BACKEND_INTEGRITY 2
 +#define BHV_VAS_BACKEND_PATCH 3
 +#define BHV_VAS_BACKEND_VAULT 4
++#define BHV_VAS_BACKEND_ACL 5
++#define BHV_VAS_BACKEND_GUESTLOG 6
++#define BHV_VAS_BACKEND_CREDS 7
 +
 +/* BHV CONFIGURATION BITS */
 +#define BHV_CONFIG_INTEGRITY 0
++#define BHV_CONFIG_PROC_ACL 1
++#define BHV_CONFIG_DRIVER_ACL 2
++#define BHV_CONFIG_LOGGING 3
++#define BHV_CONFIG_CREDS 4
 +
 +/* Common Defines */
 +#define BHV_INVALID_PHYS_ADDR (~0ULL)
 +
 +#endif /* __BHV_INTERFACE_COMMON_H__ */
+diff --git include/bhv/interface/creds.h include/bhv/interface/creds.h
+new file mode 100644
+index 000000000000..3bdee7376b06
+--- /dev/null
++++ include/bhv/interface/creds.h
+@@ -0,0 +1,90 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sergej Proskurin <sergej@bedrocksystems.com>
++ */
++
++#ifndef __BHV_INTERFACE_CREDS_H__
++#define __BHV_INTERFACE_CREDS_H__
++
++#include <linux/types.h>
++
++/* BHV VAS CREDS BACKEND OPS */
++#define BHV_VAS_CREDS_OP_CONFIGURE 0U
++#define BHV_VAS_CREDS_OP_REGISTER_INIT_TASK 1U
++#define BHV_VAS_CREDS_OP_ASSIGN 2U
++#define BHV_VAS_CREDS_OP_ASSIGN_PRIV 3U
++#define BHV_VAS_CREDS_OP_COMMIT 4U
++#define BHV_VAS_CREDS_OP_RELEASE 5U
++#define BHV_VAS_CREDS_OP_VERIFICATION 6U
++#define BHV_VAS_CREDS_OP_LOG 7U
++
++enum event_type {
++	EVENT_NONE = 0,
++	CORRUPTION,
++	INVALID_ASSIGNMENT,
++	DOUBLE_ASSIGNMENT,
++	INVALID_COMMIT,
++	DOUBLE_COMMIT,
++	MAX_EVENTS
++};
++
++typedef struct {
++	uint64_t addr;
++	uint64_t cred;
++	uint64_t hmac;
++} __attribute__((__packed__)) bhv_task_cred_t;
++
++typedef struct {
++	bhv_task_cred_t init_task;
++} __attribute__((__packed__)) bhv_creds_init_task_arg_t;
++
++typedef struct {
++	bhv_task_cred_t new_task;
++	bhv_task_cred_t parent;
++	uint8_t ret;
++} __attribute__((__packed__)) bhv_creds_assign_arg_t;
++
++typedef struct {
++	uint64_t cred;
++	uint64_t daemon;
++	uint8_t ret;
++} __attribute__((__packed__)) bhv_creds_assign_priv_arg_t;
++
++typedef struct {
++	bhv_task_cred_t cur;
++	uint8_t ret;
++} __attribute__((__packed__)) bhv_creds_commit_arg_t;
++
++typedef struct {
++	uint64_t cred;
++} __attribute__((__packed__)) bhv_creds_release_arg_t;
++
++typedef struct {
++	bhv_task_cred_t task;
++	uint8_t ret;
++} __attribute__((__packed__)) bhv_creds_verification_arg_t;
++
++typedef struct {
++	uint8_t event_type;
++	uint8_t block;
++	uint16_t pad1;
++	uint32_t task_pid;
++	uint64_t task_addr;
++	uint64_t task_cred;
++	char task_name[TASK_COMM_LEN];
++} __attribute__((__packed__)) bhv_creds_log_arg_t;
++
++typedef struct {
++	union {
++		bhv_creds_init_task_arg_t creds_register;
++		bhv_creds_assign_arg_t creds_assign;
++		bhv_creds_assign_priv_arg_t creds_assign_priv;
++		bhv_creds_commit_arg_t creds_commit;
++		bhv_creds_release_arg_t creds_release;
++		bhv_creds_verification_arg_t creds_verify;
++		bhv_creds_log_arg_t creds_log;
++	};
++} __attribute__((__packed__)) bhv_creds_arg_t;
++
++#endif /* __BHV_INTERFACE_CREDS_H__ */
+diff --git include/bhv/interface/guestlog.h include/bhv/interface/guestlog.h
+new file mode 100644
+index 000000000000..a2a894f78480
+--- /dev/null
++++ include/bhv/interface/guestlog.h
+@@ -0,0 +1,81 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ */
++
++#ifndef __BHV_INTERFACE_GUESTLOG_H__
++#define __BHV_INTERFACE_GUESTLOG_H__
++
++#include <linux/types.h>
++
++/* BHV VAS ACL BACKEND OPS */
++#define BHV_VAS_GUESTLOG_OP_INIT_GUESTLOG 0U
++
++/* BHV GUESTLOG MESSAGE TYPES */
++#define BHV_GUESTLOG_MSG_TYPE_STR 0U
++#define BHV_GUESTLOG_MSG_TYPE_PROCESS_FORK 1U
++#define BHV_GUESTLOG_MSG_TYPE_PROCESS_EXEC 2U
++#define BHV_GUESTLOG_MSG_TYPE_PROCESS_EXIT 3U
++#define BHV_GUESTLOG_MSG_TYPE_DRIVER_LOAD 4U
++
++typedef struct {
++	uint16_t type;
++	uint16_t sz;
++} __attribute__((__packed__)) guestlog_msg_header_t;
++
++#define MAX_MSG_SZ (sizeof(guestlog_msg_header_t) + 1048)
++#define MAX_MSG_DATA_SZ 1048
++
++typedef struct {
++	char buf[MAX_MSG_DATA_SZ];
++} __attribute__((__packed__)) guestlog_msg_str_t;
++
++typedef struct {
++	uint32_t child_pid;
++	uint32_t parent_pid;
++	uint32_t child_comm_offset;
++	uint32_t parent_comm_offset;
++	char buf[];
++} __attribute__((__packed__)) guestlog_msg_process_fork_t;
++
++typedef struct {
++	uint32_t pid;
++	uint32_t parent_pid;
++	char name[];
++} __attribute__((__packed__)) guestlog_msg_process_exec_t;
++
++typedef struct {
++	uint32_t pid;
++	uint32_t parent_pid;
++	char name[];
++} __attribute__((__packed__)) guestlog_msg_process_exit_t;
++
++typedef struct {
++	char name[MAX_MSG_DATA_SZ];
++} __attribute__((__packed__)) guestlog_msg_driver_load_t;
++
++typedef struct {
++	guestlog_msg_header_t header;
++	union {
++		guestlog_msg_str_t str;
++		guestlog_msg_process_fork_t process_fork;
++		guestlog_msg_process_exec_t process_exec;
++		guestlog_msg_process_exit_t process_exit;
++		guestlog_msg_driver_load_t driver_load;
++	};
++} __attribute__((__packed__)) guestlog_msg_t;
++
++#define BHV_GUESTLOG_CONFIG_LOG_PROCESS_EVENTS 0
++#define BHV_GUESTLOG_CONFIG_LOG_DRIVER_EVENTS 1
++
++typedef struct {
++	uint64_t log_bitmap;
++	uint32_t cid;
++	uint32_t port;
++	uint8_t valid;
++} __attribute__((__packed__)) bhv_guestlog_config_t;
++
++#endif /* __BHV_INTERFACE_GUESTLOG_H__ */
+\ No newline at end of file
 diff --git include/bhv/interface/hypercall.h include/bhv/interface/hypercall.h
 new file mode 100644
 index 000000000000..d9c92066f040
@@ -3025,14 +3571,15 @@ index 000000000000..d9c92066f040
 +#endif /* _ASM_INTERFACE_BHV_HYPERCALL_H */
 diff --git include/bhv/interface/init.h include/bhv/interface/init.h
 new file mode 100644
-index 000000000000..0a635fea59e7
+index 000000000000..caad23f68bc3
 --- /dev/null
 +++ include/bhv/interface/init.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,28 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
 + * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *	    Sergej Proskurin <sergej@bedrocksystems.com>
 + */
 +
 +#ifndef __BHV_INTERFACE_INIT_H__
@@ -3052,9 +3599,7 @@ index 000000000000..0a635fea59e7
 +} __attribute__((__packed__)) bhv_init_init_arg_t;
 +
 +typedef struct {
-+	union {
-+		bhv_init_init_arg_t bhv_init_init_arg;
-+	};
++	bhv_init_init_arg_t bhv_init_init_arg;
 +} __attribute__((__packed__)) bhv_init_arg_t;
 +
 +#endif /* __BHV_INTERFACE_INIT_H__ */
@@ -3479,7 +4024,7 @@ index 822b701c803d..c41d12d0b782 100644
  }
  
 diff --git init/main.c init/main.c
-index dd26a42e80a8..69c7f1d74cfd 100644
+index dd26a42e80a8..1118ef396f66 100644
 --- init/main.c
 +++ init/main.c
 @@ -110,6 +110,9 @@
@@ -3501,21 +4046,6 @@ index dd26a42e80a8..69c7f1d74cfd 100644
  }
  
  void __init __weak arch_call_rest_init(void)
-@@ -1414,8 +1419,14 @@ static int __ref kernel_init(void *unused)
- 	kprobe_free_init_mem();
- 	ftrace_free_init_mem();
- 	kgdb_free_init_mem();
-+#ifdef CONFIG_ARM64
-+	bhv_start();
-+#endif
- 	free_initmem();
- 	mark_readonly();
-+#ifdef CONFIG_X86
-+	bhv_start();
-+#endif
- 
- 	/*
- 	 * Kernel mappings are now finalized - update the userspace page-table
 diff --git kernel/Makefile kernel/Makefile
 index e7905bdf6e97..4c4454e8806a 100644
 --- kernel/Makefile
@@ -3530,10 +4060,10 @@ index e7905bdf6e97..4c4454e8806a 100644
  obj-$(CONFIG_FREEZER) += freezer.o
 diff --git kernel/bhv/Kconfig kernel/bhv/Kconfig
 new file mode 100644
-index 000000000000..f53bd2dcba90
+index 000000000000..efb414dc06a9
 --- /dev/null
 +++ kernel/bhv/Kconfig
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,16 @@
 +config BHV_PANIC_ON_FAIL
 +	def_bool y
 +	bool "BVH guest panics on Hypercall failure"
@@ -3543,12 +4073,19 @@ index 000000000000..f53bd2dcba90
 +	  BRASS hypercall fails.  This will prevent the guest
 +	  continuing execution if a security critical hypercall
 +	  fails.
++
++config BHV_VAS_DEBUG
++	def_bool n
++	bool "Build BVH guest support with DEBUG information"
++	depends on BHV_VAS
++	help
++	  Say Y if you want to include DEBUG output when using BHV VAS.
 diff --git kernel/bhv/Makefile kernel/bhv/Makefile
 new file mode 100644
-index 000000000000..196d2a796d56
+index 000000000000..4fa9b07d9f5f
 --- /dev/null
 +++ kernel/bhv/Makefile
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,19 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +
 +# Copyright (C) 2022 - BedRock Systems Inc
@@ -3565,19 +4102,321 @@ index 000000000000..196d2a796d56
 +endif
 +obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
 +obj-$(CONFIG_BHV_VAS)		+= module.o
++obj-$(CONFIG_BHV_VAS)		+= acl.o
++obj-$(CONFIG_BHV_VAS)		+= guestlog.o
++obj-$(CONFIG_BHV_VAS)		+= creds.o
+diff --git kernel/bhv/acl.c kernel/bhv/acl.c
+new file mode 100644
+index 000000000000..75e33f67225a
+--- /dev/null
++++ kernel/bhv/acl.c
+@@ -0,0 +1,289 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sebastian Vogl <sebastian@bedrocksystems.com>
++ *          Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
++#include <bhv/bhv_print.h>
++
++#include <linux/cache.h>
++#include <linux/gfp.h>
++#include <linux/limits.h>
++#include <linux/types.h>
++#include <linux/slab.h>
++
++#include <bhv/bhv.h>
++#include <bhv/interface/common.h>
++#include <bhv/interface/hypercall.h>
++#include <bhv/interface/acl.h>
++
++#include <bhv/interface/integrity.h>
++#include <bhv/integrity.h>
++
++#include <bhv/acl.h>
++
++#define PATH_DELIMITER '/'
++
++bhv_acl_config_t *process_acl_config __ro_after_init = NULL;
++bhv_acl_config_t *driver_acl_config __ro_after_init = NULL;
++
++struct kmem_cache *bhv_acl_violation_cache;
++
++static void __init bhv_acl_init_acl(uint32_t op, bhv_acl_config_t **global_acl_config)
++{
++	unsigned long r;
++	bhv_acl_config_t *acl_config;
++	static bhv_mem_region_t config_region;
++
++	bhv_acl_violation_cache = kmem_cache_create(
++		"bhv_acl_violation_cache", sizeof(bhv_acl_violation_t), 0,
++		SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
++
++	acl_config = (bhv_acl_config_t *)__get_free_pages(GFP_KERNEL, 0);
++
++	if (acl_config == NULL) {
++		bhv_fail("Unable to allocate process acl config");
++		return;
++	}
++
++	acl_config->num_pages = 1;
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_ACL, op, acl_config);
++	if (r) {
++		pr_err("proc acl init fail");
++		return;
++	}
++
++	if (!acl_config->valid) {
++		free_pages((unsigned long)acl_config, 0);
++
++		acl_config =
++		(bhv_acl_config_t *)__get_free_pages(GFP_KERNEL, order_base_2(acl_config->num_pages));
++
++		if (acl_config == NULL) {
++			bhv_fail("Unable to allocate process acl config");
++			return;
++		}
++
++		r = bhv_hypercall_vas(BHV_VAS_BACKEND_ACL, op, acl_config);
++		if (r) {
++			pr_err("proc acl init fail");
++			return;
++		}
++
++		if (!acl_config->valid) {
++			bhv_fail("host returned invalid configuration");
++			return;
++		}
++	}
++
++	// Protect memory
++	config_region.bhv_mem_region_create.start_addr =
++		virt_to_phys(acl_config);
++	config_region.bhv_mem_region_create.size =
++		acl_config->num_pages * PAGE_SIZE;
++	config_region.bhv_mem_region_create.type = BHV_MEM_TYPE_DATA_READ_ONLY;
++	config_region.bhv_mem_region_create.flags = BHV_MEM_FLAGS_NONE;
++	config_region.bhv_mem_region_create.next = BHV_INVALID_PHYS_ADDR;
++
++	r = bhv_create_kern_phys_mem_region_hyp(0, &config_region);
++	if (r) {
++		pr_err("Unable to protect acl config");
++		return;
++	}
++
++	*global_acl_config = acl_config;
++}
++
++void __init bhv_acl_mm_init(void)
++{
++	if (bhv_acl_is_proc_acl_enabled())
++		bhv_acl_init_acl(BHV_VAS_ACL_OP_INIT_PROC_ACL,
++				 &process_acl_config);
++	if (bhv_acl_is_driver_acl_enabled())
++		bhv_acl_init_acl(BHV_VAS_ACL_OP_INIT_DRIVER_ACL,
++				 &driver_acl_config);
++}
++
++static size_t _get_ext_len(const char *str)
++{
++	char *str_ext = strrchr(str, (int)'.');
++
++	if (str_ext == NULL)
++		return 0;
++
++	return strnlen(str_ext, PATH_MAX);
++}
++
++static bool _match_names(const char *cur, const char *target,
++			 size_t target_ext_len, bool strip_ext)
++{
++	// Get filename of path
++	const char *cur_tmp = strrchr(cur, (int)PATH_DELIMITER);
++	const char *target_tmp = strrchr(target, (int)PATH_DELIMITER);
++	size_t cur_tmp_len = 0;
++	size_t target_tmp_len = 0;
++
++	if (cur_tmp == NULL)
++		cur_tmp = cur;
++	else
++		cur_tmp++;
++
++	if (target_tmp == NULL)
++		target_tmp = target;
++	else
++		target_tmp++;
++
++	// Get length of filename
++	cur_tmp_len = strnlen(cur_tmp, PATH_MAX);
++	target_tmp_len = strnlen(target_tmp, PATH_MAX);
++
++	// Remove extension
++	if (strip_ext) {
++		cur_tmp_len -= _get_ext_len(cur_tmp);
++		target_tmp_len -= target_ext_len;
++	}
++
++	if (cur_tmp_len == 0 || cur_tmp_len >= PATH_MAX ||
++	    target_tmp_len == 0 || target_tmp_len >= PATH_MAX)
++		return false;
++
++	// Check if length matches
++	if (cur_tmp_len != target_tmp_len)
++		return false;
++
++	return strncmp(cur_tmp, target_tmp, cur_tmp_len) == 0;
++}
++
++static bool _matches(const char *target, bool strip_ext,
++		     bhv_acl_config_t *acl_config)
++{
++	size_t target_len = 0;
++	size_t target_ext_len = 0;
++	uint16_t i;
++
++	BUG_ON(target[0] != PATH_DELIMITER);
++
++	if (acl_config == NULL)
++		return false;
++
++	if (!acl_config->valid)
++		return false;
++
++	// Get target len
++	target_len = strnlen(target, PATH_MAX);
++	if (strip_ext) {
++		target_ext_len = _get_ext_len(target);
++		target_len -= target_ext_len;
++	}
++
++	if (target_len == 0 || target_len >= PATH_MAX)
++		return false;
++
++	for (i = 0; i < acl_config->list_len; i++) {
++		const char *cur = ((char *)acl_config) + acl_config->list[i];
++		size_t cur_len = 0;
++
++		if (cur[0] != PATH_DELIMITER) {
++			if (_match_names(cur, target, target_ext_len,
++					 strip_ext))
++				return true;
++			else
++				continue;
++		}
++
++		cur_len = strnlen(cur, PATH_MAX);
++		if (strip_ext) {
++			cur_len -= _get_ext_len(cur);
++		}
++
++		if (cur_len == 0 || cur_len >= PATH_MAX)
++			continue;
++
++		if (cur[cur_len - 1] == '*') {
++			cur_len--;
++
++			if (target_len < cur_len)
++				continue;
++		} else if (target_len != cur_len)
++			continue;
++
++		if (strncmp(cur, target, cur_len) == 0)
++			return true;
++	}
++
++	return false;
++}
++
++static bool _block_entity(const char *target, bool strip_ext,
++			  bhv_acl_config_t *acl_config, uint32_t op)
++{
++	bool rv;
++	unsigned long r;
++	// Tell the compiler this points to volatile data as the hypercall
++	// will update it.
++	bhv_acl_violation_t *volatile acl_violation = NULL;
++	size_t target_len = strlen(target);
++	bool m = _matches(target, strip_ext, acl_config);
++
++	// Is this entity part of the allow list?
++	if (acl_config->is_allow && m)
++		return false;
++	// Is this entity _NOT_ in the deny list?
++	else if (!acl_config->is_allow && !m)
++		return false;
++
++	BUG_ON(target_len >= PAGE_SIZE);
++
++	// Prepare hypercall
++	acl_violation = kmem_cache_alloc(bhv_acl_violation_cache, GFP_KERNEL);
++	if (acl_violation == NULL) {
++		bhv_fail("Unable to allocate acl violation");
++		return true;
++	}
++
++	// Setup arg
++	acl_violation->name_len = target_len;
++	acl_violation->name = virt_to_phys((volatile void *)target);
++
++	// Hypercall
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_ACL, op, acl_violation);
++	if (r) {
++		pr_err("entity hypercall failed");
++		kmem_cache_free(bhv_acl_violation_cache, acl_violation);
++		return true;
++	}
++
++	// Read block and free
++	rv = (bool)acl_violation->block;
++	kmem_cache_free(bhv_acl_violation_cache, acl_violation);
++	return rv;
++}
++
++bool bhv_block_driver(const char *target)
++{
++	if (!bhv_acl_is_driver_acl_enabled())
++		return false;
++
++	if (target == NULL) {
++		// Unknown filename. For example, init_module call. => BLOCK
++		return true;
++	}
++
++	return _block_entity(target, true, driver_acl_config,
++			     BHV_VAS_ACL_OP_VIOLATION_DRIVER_ACL);
++}
++
++bool bhv_block_process(const char *target)
++{
++	if (!bhv_acl_is_proc_acl_enabled())
++		return false;
++
++	if (target == NULL) {
++		// Unknown filename => BLOCK
++		return true;
++	}
++
++	return _block_entity(target, false, process_acl_config,
++			     BHV_VAS_ACL_OP_VIOLATION_PROC_ACL);
++}
+\ No newline at end of file
 diff --git kernel/bhv/bhv.c kernel/bhv/bhv.c
 new file mode 100644
-index 000000000000..cab381b144fb
+index 000000000000..07652cf56598
 --- /dev/null
 +++ kernel/bhv/bhv.c
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,24 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
 + * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
 + */
 +
++#include <bhv/acl.h>
++#include <bhv/creds.h>
 +#include <bhv/integrity.h>
++#include <bhv/guestlog.h>
 +#include <bhv/patch.h>
 +
 +#include <bhv/bhv.h>
@@ -3588,14 +4427,666 @@ index 000000000000..cab381b144fb
 +void __init bhv_mm_init(void)
 +{
 +	bhv_integrity_mm_init();
++	bhv_acl_mm_init();
++	bhv_guestlog_init();
++	bhv_cred_mm_init();
++}
+diff --git kernel/bhv/creds.c kernel/bhv/creds.c
+new file mode 100644
+index 000000000000..fae31bddbe65
+--- /dev/null
++++ kernel/bhv/creds.c
+@@ -0,0 +1,407 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors:  Sergej Proskurin <sergej@bedrocksystems.com> 
++ */
++
++#include <linux/init_task.h>
++#include <linux/printk.h>
++#include <linux/sched.h>
++#include <linux/siphash.h>
++#include <linux/slab.h>
++#include <linux/types.h>
++
++#include <bhv/bhv.h>
++#include <bhv/creds.h>
++#include <bhv/interface/common.h>
++#include <bhv/interface/creds.h>
++#include <bhv/interface/hypercall.h>
++
++#define BHV_CREDS_HYP(op, arg) bhv_hypercall_vas(BHV_VAS_BACKEND_CREDS, op, arg)
++
++#define BHV_CREDS_CONFIGURE_HYP(arg)                                           \
++	BHV_CREDS_HYP(BHV_VAS_CREDS_OP_CONFIGURE, arg)
++#define BHV_CREDS_REGISTER_INIT_TASK_HYP(arg)                                  \
++	BHV_CREDS_HYP(BHV_VAS_CREDS_OP_REGISTER_INIT_TASK, arg)
++#define BHV_CREDS_ASSIGN_HYP(arg) BHV_CREDS_HYP(BHV_VAS_CREDS_OP_ASSIGN, arg)
++#define BHV_CREDS_ASSIGN_PRIV_HYP(arg)                                         \
++	BHV_CREDS_HYP(BHV_VAS_CREDS_OP_ASSIGN_PRIV, arg)
++#define BHV_CREDS_COMMIT_HYP(arg) BHV_CREDS_HYP(BHV_VAS_CREDS_OP_COMMIT, arg)
++#define BHV_CREDS_RELEASE_HYP(arg) BHV_CREDS_HYP(BHV_VAS_CREDS_OP_RELEASE, arg)
++#define BHV_CREDS_VERIFY_HYP(arg)                                              \
++	BHV_CREDS_HYP(BHV_VAS_CREDS_OP_VERIFICATION, arg)
++#define BHV_CREDS_LOG_HYP(arg) BHV_CREDS_HYP(BHV_VAS_CREDS_OP_LOG, arg)
++
++struct kmem_cache *bhv_creds_arg_cache = NULL;
++
++static siphash_key_t bhv_siphash_key __ro_after_init = { 0 };
++
++static size_t collect_cred_invariants(char *buf, const struct cred *c,
++				      const struct task_struct *context,
++				      size_t max_size)
++{
++	char *_buf = NULL;
++	uint64_t bound_context = 0;
++	struct cred cred_copy;
++
++	static const size_t buf_size = sizeof(uint64_t) + sizeof(struct cred);
++
++	BUG_ON(!buf && max_size < buf_size);
++
++	_buf = buf;
++
++	memcpy(&cred_copy, c, sizeof(struct cred));
++
++	/* Exclude mutable fields from the credentials to be hashed. */
++
++	atomic_set(&cred_copy.usage, 0);
++#ifdef CONFIG_DEBUG_CREDENTIALS
++	atomic_set(&cred_copy.subscribers, 0);
++	cred_copy.put_addr = 0,
++#endif
++	memset(&cred_copy.rcu, 0, sizeof(struct rcu_head));
++
++	/*
++	 * Bind the credentials to the given context; incorporate this
++	 * information into the hash.
++	 */
++
++	bound_context = (uint64_t)c ^ (uint64_t)context;
++
++	_buf = memcpy(_buf, &bound_context, sizeof(uint64_t));
++	_buf += sizeof(uint64_t);
++
++	_buf = memcpy(_buf, &cred_copy, sizeof(struct cred));
++
++	return buf_size;
++}
++
++static uint64_t siphash_cred_context(const struct cred *const c,
++				     const struct task_struct *const context)
++{
++#define MAX_BUF_SIZE sizeof(struct cred) + sizeof(uint64_t)
++	char buf[MAX_BUF_SIZE];
++	size_t size = collect_cred_invariants(buf, c, context, MAX_BUF_SIZE);
++	return siphash(&buf, size, &bhv_siphash_key);
++}
++
++int bhv_cred_assign(struct task_struct *t, uint64_t clone_flags)
++{
++	int rc = 0;
++	uint64_t hmac = 0;
++	bhv_creds_arg_t *arg = NULL;
++	struct task_struct *parent = NULL;
++	enum event_type type = EVENT_NONE;
++
++	if (!bhv_cred_is_enabled())
++		return 0;
++
++	arg = kmem_cache_alloc(bhv_creds_arg_cache, GFP_KERNEL);
++
++	if (arg == NULL) {
++		return -ENOMEM;
++	}
++
++	/*
++	 * Note that we verify the integrity of the currently active process,
++	 * instead of the "real_parent" of the to be assigned credentials.
++	 * Consider verifying the real_parent of the task as well.
++	 */
++	rc = bhv_cred_verify(current);
++	if (rc)
++		return -EPERM;
++
++	if (clone_flags & (CLONE_THREAD | CLONE_PARENT))
++		parent = current->real_parent;
++	else
++		parent = current;
++
++	hmac = siphash_cred_context(t->cred, t);
++
++	arg->creds_assign.new_task.addr = (uint64_t)t;
++	arg->creds_assign.new_task.cred = (uint64_t)t->cred;
++	arg->creds_assign.new_task.hmac = hmac;
++	arg->creds_assign.parent.addr = (uint64_t)parent;
++	arg->creds_assign.parent.cred = (uint64_t)parent->cred;
++
++	rc = BHV_CREDS_ASSIGN_HYP(arg);
++	if (rc) {
++		pr_err("%s: BHV cannot assign credentials @ 0x%llx to task @ 0x%llx (pid=%d)",
++		       __FUNCTION__, (uint64_t)t->cred, (uint64_t)parent,
++		       parent->pid);
++		rc = -EINVAL;
++	}
++
++	type = arg->creds_assign.ret;
++
++	if (!rc && type != EVENT_NONE) {
++		/* Note that we currently log only the parent's information. */
++		arg->creds_log.event_type = type;
++		arg->creds_log.task_addr = (uint64_t)parent;
++		arg->creds_log.task_cred = (uint64_t)parent->cred;
++		arg->creds_log.task_pid = parent->pid;
++		strscpy(arg->creds_log.task_name, parent->comm, TASK_COMM_LEN);
++
++		rc = BHV_CREDS_LOG_HYP(arg);
++		if (rc) {
++			pr_err("%s: BHV Cannot log event with type=%d",
++			       __FUNCTION__, type);
++		}
++
++		/* Check if the policy is configured to be blocking. */
++		if (arg->creds_log.block) {
++			rc = -EPERM;
++		}
++	}
++
++	kmem_cache_free(bhv_creds_arg_cache, arg);
++
++	return rc;
++}
++
++int bhv_cred_assign_priv(struct cred *c, struct task_struct *daemon)
++{
++	int rc = 0;
++	bhv_creds_arg_t *arg = NULL;
++	enum event_type type = EVENT_NONE;
++
++	if (!bhv_cred_is_enabled())
++		return 0;
++
++	arg = kmem_cache_alloc(bhv_creds_arg_cache, GFP_KERNEL);
++	if (arg == NULL) {
++		return -ENOMEM;
++	}
++
++	/* XXX: Do we need to compute an (incomplete) hmac? */
++
++	arg->creds_assign_priv.cred = (uint64_t)c;
++	arg->creds_assign_priv.daemon = (uint64_t)daemon;
++
++	rc = BHV_CREDS_ASSIGN_PRIV_HYP(arg);
++	if (rc) {
++		pr_err("%s: BHV cannot prepare priv credentials @ 0x%llx (daemon @ 0x%llx)",
++		       __FUNCTION__, (uint64_t)c, (uint64_t)daemon);
++		rc = -EINVAL;
++	}
++
++	type = arg->creds_assign_priv.ret;
++
++	if (!rc && type != EVENT_NONE) {
++		arg->creds_log.event_type = type;
++		arg->creds_log.task_addr = (uint64_t)current;
++		arg->creds_log.task_cred = (uint64_t)c;
++		arg->creds_log.task_pid = current->pid;
++		strscpy(arg->creds_log.task_name, current->comm, TASK_COMM_LEN);
++
++		rc = BHV_CREDS_LOG_HYP(arg);
++		if (rc) {
++			pr_err("%s: BHV Cannot log event with type=%d",
++			       __FUNCTION__, type);
++		}
++
++		/* Check if the policy is configured to be blocking. */
++		if (arg->creds_log.block) {
++			rc = -EPERM;
++		}
++	}
++
++	kmem_cache_free(bhv_creds_arg_cache, arg);
++
++	return rc;
++}
++
++void bhv_cred_commit(struct cred *c)
++{
++	int rc = 0;
++	uint64_t hmac = 0;
++	bhv_creds_arg_t *arg = NULL;
++	enum event_type type = EVENT_NONE;
++
++	if (!bhv_cred_is_enabled())
++		return;
++
++	arg = kmem_cache_alloc(bhv_creds_arg_cache, GFP_KERNEL);
++	if (arg == NULL) {
++		return;
++	}
++
++	hmac = siphash_cred_context(c, current);
++
++	arg->creds_commit.cur.cred = (uint64_t)c;
++	arg->creds_commit.cur.addr = (uint64_t)current;
++	arg->creds_commit.cur.hmac = hmac;
++
++	rc = BHV_CREDS_COMMIT_HYP(arg);
++	if (rc) {
++		pr_err("%s: BHV cannot commit credentials @ 0x%llx to current @ 0x%llx",
++		       __FUNCTION__, (uint64_t)c, (uint64_t)current);
++	}
++
++	type = arg->creds_commit.ret;
++
++	if (!rc && type != EVENT_NONE) {
++		arg->creds_log.event_type = type;
++		arg->creds_log.task_addr = (uint64_t)current;
++		arg->creds_log.task_cred = (uint64_t)c;
++		arg->creds_log.task_pid = current->pid;
++		strscpy(arg->creds_log.task_name, current->comm, TASK_COMM_LEN);
++
++		rc = BHV_CREDS_LOG_HYP(arg);
++		if (rc) {
++			pr_err("%s: BHV Cannot log event with type=%d",
++			       __FUNCTION__, type);
++		}
++
++		/*
++		 * Note that we cannot block this function, yet, the corrupted
++		 * credentials will be identified on the next verification
++		 * point.
++		 */
++	}
++
++	kmem_cache_free(bhv_creds_arg_cache, arg);
++}
++
++int bhv_cred_verify(struct task_struct *t)
++{
++	int rc = 0;
++	uint64_t hmac = 0;
++	bhv_creds_arg_t *arg = NULL;
++	enum event_type type = EVENT_NONE;
++
++	if (!bhv_cred_is_enabled())
++		return 0;
++
++	arg = kmem_cache_alloc(bhv_creds_arg_cache, GFP_KERNEL);
++	if (arg == NULL) {
++		return -ENOMEM;
++	}
++
++	hmac = siphash_cred_context(t->cred, t);
++
++	arg->creds_verify.task.cred = (uint64_t)t->cred;
++	arg->creds_verify.task.addr = (uint64_t)t;
++	arg->creds_verify.task.hmac = hmac;
++
++	rc = BHV_CREDS_VERIFY_HYP(arg);
++	if (rc) {
++		pr_err("%s: BHV cannot verify credentials @ 0x%llx of task @ 0x%llx",
++		       __FUNCTION__, (uint64_t)t->cred, (uint64_t)t);
++		rc = -EINVAL;
++	}
++
++	type = arg->creds_verify.ret;
++
++	if (!rc && type != EVENT_NONE) {
++		arg->creds_log.event_type = type;
++		arg->creds_log.task_addr = (uint64_t)t;
++		arg->creds_log.task_cred = (uint64_t)t->cred;
++		arg->creds_log.task_pid = current->pid;
++		strscpy(arg->creds_log.task_name, t->comm, TASK_COMM_LEN);
++
++		rc = BHV_CREDS_LOG_HYP(arg);
++		if (rc) {
++			pr_err("%s: BHV Cannot log event with type=%d",
++			       __FUNCTION__, type);
++		}
++
++		/* Check if the policy is configured to be blocking. */
++		if (arg->creds_log.block) {
++			rc = -EPERM;
++		}
++	}
++
++	kmem_cache_free(bhv_creds_arg_cache, arg);
++
++	return rc;
++}
++
++void bhv_cred_release(struct cred *c)
++{
++	int rc = 0;
++	bhv_creds_arg_t *arg = NULL;
++
++	if (!bhv_cred_is_enabled())
++		return;
++
++	arg = kmem_cache_alloc(bhv_creds_arg_cache, GFP_KERNEL);
++	if (arg == NULL) {
++		return;
++	}
++
++	/*
++	 * XXX: Find a way to better integrate BHV into the RCU mechanism in
++	 * order to batch multpile credentials to be released and hence to avoid
++	 * unnecessary hypercalls.
++	 */
++
++	arg->creds_release.cred = (uint64_t)c;
++
++	rc = BHV_CREDS_RELEASE_HYP(arg);
++	if (rc) {
++		pr_err("%s: BHV cannot release credentials @ 0x%llx",
++		       __FUNCTION__, (uint64_t)c);
++	}
++
++	kmem_cache_free(bhv_creds_arg_cache, arg);
++}
++
++static void __init bhv_cred_register_init_task(struct cred *const c,
++					       struct task_struct *const t)
++{
++	int rc = 0;
++	bhv_creds_arg_t *arg = NULL;
++
++	if (!bhv_cred_is_enabled())
++		return;
++
++	arg = kmem_cache_alloc(bhv_creds_arg_cache, GFP_KERNEL);
++	if (arg == NULL) {
++		return;
++	}
++
++	arg->creds_register.init_task.addr = (uint64_t)t;
++	arg->creds_register.init_task.cred = (uint64_t)c;
++	arg->creds_register.init_task.hmac = siphash_cred_context(c, t);
++
++	rc = BHV_CREDS_REGISTER_INIT_TASK_HYP(arg);
++	if (rc) {
++		pr_err("%s: BHV cannot register init_task @ 0x%llx with cred @ 0x%llx",
++		       __FUNCTION__, (uint64_t)t, (uint64_t)c);
++	}
++
++	kmem_cache_free(bhv_creds_arg_cache, arg);
++}
++
++void __init bhv_cred_mm_init(void)
++{
++	if (!bhv_cred_is_enabled())
++		return;
++
++	bhv_creds_arg_cache = kmem_cache_create(
++		"bhv_creds_arg_cache", sizeof(bhv_creds_arg_t), 0,
++		SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
++
++	bhv_cred_register_init_task(&init_cred, &init_task);
++}
++
++int __init bhv_cred_init(void)
++{
++	int rc = 0;
++
++	if (!bhv_cred_is_enabled())
++		return -EINVAL;
++	/*
++	 * Inform BRASS about the location of the siphash key. Note that this
++	 * step has to be done first and very early in the bootstrapping phase
++	 * so that we do not miss the instantiation of new credentials.
++	 */
++	rc = BHV_CREDS_CONFIGURE_HYP(&bhv_siphash_key);
++	if (rc) {
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
+diff --git kernel/bhv/guestlog.c kernel/bhv/guestlog.c
+new file mode 100644
+index 000000000000..468738d70304
+--- /dev/null
++++ kernel/bhv/guestlog.c
+@@ -0,0 +1,230 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ */
++#include <linux/net.h>
++#include <linux/socket.h>
++#include <linux/workqueue.h>
++#include <net/net_namespace.h>
++
++#include <net/vsock_addr.h>
++
++#include <bhv/bhv.h>
++
++#include <bhv/guestlog.h>
++#include <bhv/interface/hypercall.h>
++#include <bhv/interface/guestlog.h>
++
++bhv_guestlog_config_t bhv_guestlog_config __ro_after_init = { false, 0 };
++static struct socket *vsock = NULL;
++
++typedef struct {
++	guestlog_msg_t msg;
++	struct work_struct work;
++} bhv_guestlog_work_item_t;
++static struct workqueue_struct *queue = NULL;
++static struct kmem_cache *bhv_guestlog_work_cache;
++
++static void bhv_guestlog_sendmsg(struct work_struct *work)
++{
++	bhv_guestlog_work_item_t *item =
++		container_of(work, bhv_guestlog_work_item_t, work);
++	struct kvec vec = { .iov_base = &item->msg,
++			    .iov_len = item->msg.header.sz };
++	struct msghdr msghdr = { .msg_flags = MSG_DONTWAIT };
++
++	int err = kernel_sendmsg(vsock, &msghdr, &vec, 1, vec.iov_len);
++	if (err < 0)
++		pr_err("BHV GuestLog: Send Failed (%d)", err);
++
++	// Free memory.
++	kmem_cache_free(bhv_guestlog_work_cache, item);
++}
++
++static inline int bhv_guestlog_send(guestlog_msg_t *msg)
++{
++	bhv_guestlog_work_item_t *cur = NULL;
++
++	if (vsock != NULL) {
++		pr_debug("BHV GuestLog: Queuing msg of type %u with size %u",
++			 msg->header.type, msg->header.sz);
++
++		// Allocate work item.
++		cur = kmem_cache_alloc(bhv_guestlog_work_cache, GFP_KERNEL);
++		if (cur == NULL) {
++			bhv_fail("BHV: Unable to allocate work item");
++			return -ENOMEM;
++		}
++
++		// Init
++		INIT_WORK(&cur->work, bhv_guestlog_sendmsg);
++		memcpy(&cur->msg, msg, sizeof(cur->msg));
++
++		// Queue
++		queue_work(queue, &cur->work);
++	}
++
++	return 0;
++}
++
++int bhv_guestlog_log(char *fmt, ...)
++{
++	int len;
++	va_list args;
++	guestlog_msg_t msg;
++
++	// format string and set vector
++	va_start(args, fmt);
++	len = vscnprintf(msg.str.buf, MAX_MSG_DATA_SZ, fmt, args);
++	va_end(args);
++
++	// Setup msg
++	msg.header.type = BHV_GUESTLOG_MSG_TYPE_STR;
++	msg.header.sz = bhv_guestlog_calc_msg_sz(msg.header.type, len);
++
++	// Send
++	return bhv_guestlog_send(&msg);
++}
++
++int bhv_guestlog_log_process_fork(uint32_t child_pid, const char *child_comm,
++				  uint32_t parent_pid, const char *parent_comm)
++{
++	guestlog_msg_t msg;
++
++	// Setup msg
++	msg.header.type = BHV_GUESTLOG_MSG_TYPE_PROCESS_FORK;
++	msg.process_fork.child_pid = child_pid;
++	msg.process_fork.parent_pid = parent_pid;
++	msg.process_fork.child_comm_offset = 0;
++	strscpy(msg.process_fork.buf, child_comm, TASK_COMM_LEN);
++	msg.process_fork.parent_comm_offset =
++		strnlen(msg.process_fork.buf, TASK_COMM_LEN) + 1;
++	strscpy(&msg.process_fork.buf[msg.process_fork.parent_comm_offset],
++		parent_comm, TASK_COMM_LEN);
++	msg.header.sz = bhv_guestlog_calc_msg_sz(
++		msg.header.type,
++		msg.process_fork.parent_comm_offset +
++			strnlen(&msg.process_fork.buf
++					 [msg.process_fork.parent_comm_offset],
++				TASK_COMM_LEN) +
++			1);
++
++	// Send
++	return bhv_guestlog_send(&msg);
++}
++
++int bhv_guestlog_log_process_exec(uint32_t pid, uint32_t parent_pid,
++				  const char *comm)
++{
++	guestlog_msg_t msg;
++
++	// Setup msg
++	msg.header.type = BHV_GUESTLOG_MSG_TYPE_PROCESS_EXEC;
++	msg.process_exec.pid = pid;
++	msg.process_exec.parent_pid = parent_pid;
++	strscpy(msg.process_exec.name, comm, TASK_COMM_LEN);
++	msg.header.sz = bhv_guestlog_calc_msg_sz(
++		msg.header.type,
++		strnlen(msg.process_exec.name, TASK_COMM_LEN) + 1);
++
++	// Send
++	return bhv_guestlog_send(&msg);
++}
++
++int bhv_guestlog_log_process_exit(uint32_t pid, uint32_t parent_pid,
++				  const char *comm)
++{
++	guestlog_msg_t msg;
++
++	// Setup msg
++	msg.header.type = BHV_GUESTLOG_MSG_TYPE_PROCESS_EXIT;
++	msg.process_exit.pid = pid;
++	msg.process_exit.parent_pid = parent_pid;
++	strscpy(msg.process_exit.name, comm, TASK_COMM_LEN);
++	msg.header.sz = bhv_guestlog_calc_msg_sz(
++		msg.header.type,
++		strnlen(msg.process_exit.name, TASK_COMM_LEN) + 1);
++
++	// Send
++	return bhv_guestlog_send(&msg);
++}
++
++int bhv_guestlog_log_driver_load(const char *name)
++{
++	guestlog_msg_t msg;
++
++	// Setup msg
++	msg.header.type = BHV_GUESTLOG_MSG_TYPE_DRIVER_LOAD;
++	strscpy(msg.driver_load.name, name, sizeof(msg.driver_load.name));
++	msg.header.sz = bhv_guestlog_calc_msg_sz(
++		msg.header.type,
++		strnlen(msg.driver_load.name, sizeof(msg.driver_load.name)) +
++			1);
++
++	// Send
++	return bhv_guestlog_send(&msg);
++}
++
++void bhv_guestlog_start(void)
++{
++	int err;
++	struct sockaddr_vm addr;
++
++	if (!bhv_guestlog_enabled())
++		return;
++
++	vsock_addr_init(&addr, bhv_guestlog_config.cid,
++			bhv_guestlog_config.port);
++	pr_info("bhv_guestlog_started with config: cid %u, port %u, bitmap: 0x%llx, valid: %u",
++		bhv_guestlog_config.cid, bhv_guestlog_config.port,
++		bhv_guestlog_config.log_bitmap, bhv_guestlog_config.valid);
++
++	err = sock_create_kern(&init_net, AF_VSOCK, SOCK_STREAM, 0, &vsock);
++	if (err < 0) {
++		bhv_fail("GuestLog: Could not create kernel socket (%d)", err);
++		return;
++	}
++
++	err = kernel_connect(vsock, (struct sockaddr *)&addr,
++			     sizeof(struct sockaddr_vm), 0);
++	if (err < 0) {
++		bhv_fail("GuestLog: Could not connect to host (%d)", err);
++		return;
++	}
++}
++
++void __init bhv_guestlog_init()
++{
++	unsigned long r;
++
++	if (!bhv_guestlog_enabled())
++		return;
++
++	// Create cache
++	bhv_guestlog_work_cache = kmem_cache_create(
++		"bhv_guestlog_work_cache", sizeof(bhv_guestlog_work_item_t), 0,
++		SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
++	if (bhv_guestlog_work_cache == NULL) {
++		bhv_fail("BHV: Could not create kmem_cache for work items!");
++		return;
++	}
++
++	// Initialize work queue
++	queue = alloc_workqueue("bhv_guestlog_work_queue", 0, 0);
++	if (queue == NULL) {
++		bhv_fail("BHV: Could not allocate work queue!");
++		kmem_cache_destroy(bhv_guestlog_work_cache);
++		return;
++	}
++
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_GUESTLOG,
++			      BHV_VAS_GUESTLOG_OP_INIT_GUESTLOG,
++			      &bhv_guestlog_config);
++	if (r) {
++		pr_err("BHV: guestlog init failed");
++		return;
++	}
 +}
 \ No newline at end of file
 diff --git kernel/bhv/init.c kernel/bhv/init.c
 new file mode 100644
-index 000000000000..c8af3f20bf6b
+index 000000000000..09824583e08f
 --- /dev/null
 +++ kernel/bhv/init.c
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,89 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -3612,6 +5103,7 @@ index 000000000000..c8af3f20bf6b
 +#include <bhv/interface/init.h>
 +#include <bhv/interface/integrity.h>
 +#include <bhv/init.h>
++#include <bhv/creds.h>
 +
 +int __init bhv_init_hyp(void *init_start, uint64_t init_size, void *text_start,
 +			uint64_t text_size)
@@ -4616,10 +6108,10 @@ index 000000000000..5d90a14e7a73
 +}
 diff --git kernel/bhv/start.c kernel/bhv/start.c
 new file mode 100644
-index 000000000000..a89855a2010e
+index 000000000000..9b52e81f8d83
 --- /dev/null
 +++ kernel/bhv/start.c
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,91 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -4628,28 +6120,44 @@ index 000000000000..a89855a2010e
 + *          Sebastian Vogl <sebastian@bedrocksystems.com>
 + */
 +
++#include <bhv/bhv_print.h>
++
 +#include <asm/sections.h>
 +#include <asm/page.h>
 +#include <asm/io.h>
++#include <asm/syscall.h>
 +
++#include <linux/init_task.h>
++
++#include <bhv/bhv.h>
++#include <bhv/creds.h>
++#include <bhv/guestlog.h>
 +#include <bhv/init.h>
 +#include <bhv/integrity.h>
-+#include <bhv/bhv.h>
-+#include <bhv/start.h>
-+#include <bhv/patch.h>
 +#include <bhv/interface/common.h>
++#include <bhv/patch.h>
++#include <bhv/start.h>
 +
 +void __init bhv_init_platform(void)
 +{
-+	unsigned long rv = bhv_init_hyp(_sinittext, _einittext - _sinittext,
-+					_stext, _etext - _stext);
++	int rv = bhv_init_hyp(_sinittext, _einittext - _sinittext, _stext,
++			      _etext - _stext);
 +	if (rv) {
-+		pr_err("BHV: init hypercall failed: hypercall returned %lu",
-+		       rv);
++		pr_err("BHV: init hypercall failed: hypercall returned %u", rv);
 +		return;
 +	}
++
++	bhv_debug("Kernel text: start=0x%px end=0x%px", _stext, _etext);
++	bhv_debug("System call table: start=0x%px", sys_call_table);
++
 +	bhv_initialized = true;
 +	bhv_configuration_bitmap = (unsigned long *)__bhv_data_start;
++
++	rv = bhv_cred_init();
++	if (rv) {
++		pr_err("BHV: Cannot configure the BHV creds subsystem");
++		return;
++	}
 +}
 +
 +void bhv_start(void)
@@ -4687,6 +6195,9 @@ index 000000000000..a89855a2010e
 +		// Free alternatives used during init
 +		bhv_alternatives_delete_after_init();
 +	}
++
++	// Enable logging
++	bhv_guestlog_start();
 +
 +	rc = bhv_start_hyp();
 +	if (rc)
@@ -4761,6 +6272,81 @@ index 986dabc3d11f..a8ddc45aa8c9 100644
  	bpf_jit_free_exec(im->image);
  out_uncharge:
  	bpf_jit_uncharge_modmem(1);
+diff --git kernel/cred.c kernel/cred.c
+index 421b1149c651..b3d4fd6c0c8f 100644
+--- kernel/cred.c
++++ kernel/cred.c
+@@ -17,6 +17,8 @@
+ #include <linux/cn_proc.h>
+ #include <linux/uidgid.h>
+ 
++#include <bhv/creds.h>
++
+ #if 0
+ #define kdebug(FMT, ...)						\
+ 	printk("[%-5.5s%5u] " FMT "\n",					\
+@@ -112,6 +114,7 @@ static void put_cred_rcu(struct rcu_head *rcu)
+ #endif
+ 
+ 	security_cred_free(cred);
++	bhv_cred_release(cred);
+ 	key_put(cred->session_keyring);
+ 	key_put(cred->process_keyring);
+ 	key_put(cred->thread_keyring);
+@@ -451,6 +454,8 @@ int commit_creds(struct cred *new)
+ #endif
+ 	BUG_ON(atomic_read(&new->usage) < 1);
+ 
++	bhv_cred_commit(new);
++
+ 	get_cred(new); /* we will require a ref for the subj creds too */
+ 
+ 	/* dumpability changes */
+@@ -690,6 +695,9 @@ struct cred *prepare_kernel_cred(struct task_struct *daemon)
+ 
+ 	kdebug("prepare_kernel_cred() alloc %p", new);
+ 
++	if (bhv_cred_assign_priv(new, daemon))
++		return NULL;
++
+ 	if (daemon)
+ 		old = get_task_cred(daemon);
+ 	else
+diff --git kernel/fork.c kernel/fork.c
+index 3f96400a0ac6..ba2b7434a5d4 100644
+--- kernel/fork.c
++++ kernel/fork.c
+@@ -97,6 +97,8 @@
+ #include <linux/scs.h>
+ #include <linux/io_uring.h>
+ 
++#include <bhv/creds.h>
++
+ #include <asm/pgalloc.h>
+ #include <linux/uaccess.h>
+ #include <asm/mmu_context.h>
+@@ -2087,9 +2089,12 @@ static __latent_entropy struct task_struct *copy_process(
+ 	retval = security_task_alloc(p, clone_flags);
+ 	if (retval)
+ 		goto bad_fork_cleanup_audit;
+-	retval = copy_semundo(clone_flags, p);
++	retval = bhv_cred_assign(p, clone_flags);
+ 	if (retval)
+ 		goto bad_fork_cleanup_security;
++	retval = copy_semundo(clone_flags, p);
++	if (retval)
++		goto bad_fork_cleanup_bhv_assign;
+ 	retval = copy_files(clone_flags, p);
+ 	if (retval)
+ 		goto bad_fork_cleanup_semundo;
+@@ -2356,6 +2361,7 @@ static __latent_entropy struct task_struct *copy_process(
+ 	exit_files(p); /* blocking */
+ bad_fork_cleanup_semundo:
+ 	exit_sem(p);
++bad_fork_cleanup_bhv_assign:
+ bad_fork_cleanup_security:
+ 	security_task_free(p);
+ bad_fork_cleanup_audit:
 diff --git kernel/jump_label.c kernel/jump_label.c
 index 4ae693ce71a4..37ae60aa8986 100644
 --- kernel/jump_label.c
@@ -4839,3 +6425,236 @@ index 185b2655bc20..e5c3bd1b5454 100644
  	err = prepare_coming_module(mod);
  	if (err)
  		goto bug_cleanup;
+diff --git security/Kconfig security/Kconfig
+index 7561f6f99f1d..dc3b6ada1845 100644
+--- security/Kconfig
++++ security/Kconfig
+@@ -235,6 +235,7 @@ source "security/smack/Kconfig"
+ source "security/tomoyo/Kconfig"
+ source "security/apparmor/Kconfig"
+ source "security/loadpin/Kconfig"
++source "security/bhv/Kconfig"
+ source "security/yama/Kconfig"
+ source "security/safesetid/Kconfig"
+ source "security/lockdown/Kconfig"
+@@ -277,11 +278,11 @@ endchoice
+ 
+ config LSM
+ 	string "Ordered list of enabled LSMs"
+-	default "lockdown,yama,loadpin,safesetid,integrity,smack,selinux,tomoyo,apparmor,bpf" if DEFAULT_SECURITY_SMACK
+-	default "lockdown,yama,loadpin,safesetid,integrity,apparmor,selinux,smack,tomoyo,bpf" if DEFAULT_SECURITY_APPARMOR
+-	default "lockdown,yama,loadpin,safesetid,integrity,tomoyo,bpf" if DEFAULT_SECURITY_TOMOYO
+-	default "lockdown,yama,loadpin,safesetid,integrity,bpf" if DEFAULT_SECURITY_DAC
+-	default "lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf"
++	default "lockdown,yama,loadpin,safesetid,integrity,smack,selinux,tomoyo,apparmor,bpf,bhv" if DEFAULT_SECURITY_SMACK
++	default "lockdown,yama,loadpin,safesetid,integrity,apparmor,selinux,smack,tomoyo,bpf,bhv" if DEFAULT_SECURITY_APPARMOR
++	default "lockdown,yama,loadpin,safesetid,integrity,tomoyo,bpf,bhv" if DEFAULT_SECURITY_TOMOYO
++	default "lockdown,yama,loadpin,safesetid,integrity,bpf,bhv" if DEFAULT_SECURITY_DAC
++	default "lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,bhv"
+ 	help
+ 	  A comma-separated list of LSMs, in initialization order.
+ 	  Any LSMs left off this list will be ignored. This can be
+diff --git security/Makefile security/Makefile
+index 3baf435de541..9958117a6395 100644
+--- security/Makefile
++++ security/Makefile
+@@ -10,6 +10,7 @@ subdir-$(CONFIG_SECURITY_TOMOYO)        += tomoyo
+ subdir-$(CONFIG_SECURITY_APPARMOR)	+= apparmor
+ subdir-$(CONFIG_SECURITY_YAMA)		+= yama
+ subdir-$(CONFIG_SECURITY_LOADPIN)	+= loadpin
++subdir-$(CONFIG_SECURITY_BHV)		+= bhv
+ subdir-$(CONFIG_SECURITY_SAFESETID)    += safesetid
+ subdir-$(CONFIG_SECURITY_LOCKDOWN_LSM)	+= lockdown
+ subdir-$(CONFIG_BPF_LSM)		+= bpf
+@@ -28,6 +29,7 @@ obj-$(CONFIG_SECURITY_TOMOYO)		+= tomoyo/
+ obj-$(CONFIG_SECURITY_APPARMOR)		+= apparmor/
+ obj-$(CONFIG_SECURITY_YAMA)		+= yama/
+ obj-$(CONFIG_SECURITY_LOADPIN)		+= loadpin/
++obj-$(CONFIG_SECURITY_BHV)		+= bhv/
+ obj-$(CONFIG_SECURITY_SAFESETID)       += safesetid/
+ obj-$(CONFIG_SECURITY_LOCKDOWN_LSM)	+= lockdown/
+ obj-$(CONFIG_CGROUPS)			+= device_cgroup.o
+diff --git security/bhv/Kconfig security/bhv/Kconfig
+new file mode 100644
+index 000000000000..309c33608091
+--- /dev/null
++++ security/bhv/Kconfig
+@@ -0,0 +1,9 @@
++# SPDX-License-Identifier: GPL-2.0-only
++config SECURITY_BHV
++	bool "Enable the BHV LSM."
++	depends on SECURITY
++	depends on BHV_VAS
++	default y
++	help
++	  Enables the BHV LSM. The BHV LSM provides hooking capabilities for
++	  additional protections such as the process and the driver ACL.
+diff --git security/bhv/Makefile security/bhv/Makefile
+new file mode 100644
+index 000000000000..f921bdf385ea
+--- /dev/null
++++ security/bhv/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0-only
++obj-$(CONFIG_SECURITY_BHV) += bhv.o
+diff --git security/bhv/bhv.c security/bhv/bhv.c
+new file mode 100644
+index 000000000000..56ca69a80ac4
+--- /dev/null
++++ security/bhv/bhv.c
+@@ -0,0 +1,155 @@
++#include <linux/lsm_hooks.h>
++#include <linux/binfmts.h>
++
++#include <bhv/acl.h>
++#include <bhv/guestlog.h>
++
++static int bhv_read_file(struct file *file, enum kernel_read_file_id id,
++			 bool whole_file)
++{
++	if (id == READING_MODULE) {
++		char *filename = NULL;
++		char *filename_buf = NULL;
++
++		if (file != NULL && whole_file) {
++			filename_buf = (char *)__get_free_pages(GFP_KERNEL, 0);
++			if (filename_buf == NULL) {
++				bhv_fail(
++					"BHV: Unable to allocate acl violation filename buf");
++				return -ENOMEM;
++			}
++			filename =
++				d_path(&file->f_path, filename_buf, PAGE_SIZE);
++			if (IS_ERR(filename))
++				filename = NULL;
++			pr_debug("[bhv] READ DATA HOOK: %s", filename);
++
++			if (bhv_guestlog_log_driver_events()) {
++				if (filename != NULL)
++					bhv_guestlog_log_driver_load(filename);
++				else
++					bhv_guestlog_log_driver_load(
++						"[ UNKNOWN DRIVER ]");
++			}
++		}
++
++		if (bhv_acl_is_driver_acl_enabled()) {
++			if (bhv_block_driver(filename)) {
++				if (filename_buf)
++					free_pages((unsigned long)filename_buf,
++						   0);
++				return -EPERM;
++			}
++		}
++		if (filename_buf)
++			free_pages((unsigned long)filename_buf, 0);
++	}
++	return 0;
++}
++
++static int bhv_load_data(enum kernel_load_data_id id, bool contents)
++{
++	const char *origin = kernel_read_file_id_str(id);
++	pr_debug("[bhv] LOAD DATA HOOK: %s", origin);
++
++	if (id == LOADING_MODULE) {
++		if (bhv_guestlog_log_driver_events()) {
++			bhv_guestlog_log_driver_load("[ UNKNOWN DRIVER ]");
++		}
++
++		if (bhv_acl_is_driver_acl_enabled()) {
++			if (bhv_block_driver(NULL))
++				return -EPERM;
++		}
++	}
++
++	return 0;
++}
++
++static int bhv_task_alloc(struct task_struct *target,
++			  long unsigned int clone_flags)
++{
++	pr_debug("[bhv] TASK CREATE HOOK:");
++	pr_debug("\t-> PID: %d", target->pid);
++	pr_debug("\t-> PPID: %d", target->parent->pid);
++	pr_debug("\t-> NAME: %s", target->comm);
++
++	if (bhv_guestlog_log_process_events()) {
++		bhv_guestlog_log_process_fork(target->pid, target->comm,
++					      target->parent->pid,
++					      target->parent->comm);
++	}
++
++	// Filters kernel treads
++	if (bhv_acl_is_proc_acl_enabled() && target->mm != NULL) {
++		char *filename = NULL;
++		char *filename_buf = (char *)__get_free_pages(GFP_KERNEL, 0);
++		if (filename_buf == NULL) {
++			bhv_fail(
++				"BHV: Unable to allocate acl violation filename buf");
++			return -ENOMEM;
++		}
++		filename = d_path(&target->mm->exe_file->f_path, filename_buf,
++				  PAGE_SIZE);
++		if (IS_ERR(filename))
++			filename = NULL;
++		if (bhv_block_process(filename)) {
++			free_pages((unsigned long)filename_buf, 0);
++			return -EPERM;
++		}
++		free_pages((unsigned long)filename_buf, 0);
++	}
++
++	return 0;
++}
++
++static void bhv_task_free(struct task_struct *target)
++{
++	pr_debug("[bhv] TASK FREE HOOK:");
++	pr_debug("\t-> PID: %d", target->pid);
++	pr_debug("\t-> PPID: %d", target->parent->pid);
++	pr_debug("\t-> NAME: %s", target->comm);
++
++	if (bhv_guestlog_log_process_events()) {
++		bhv_guestlog_log_process_exit(target->pid, target->parent->pid,
++					      target->comm);
++	}
++}
++
++static int bhv_bprm_check_security(struct linux_binprm *bprm)
++{
++	pr_debug("[bhv] BPRM CHECK SECURITY HOOK:");
++	pr_debug("\t-> FILENAME: %s", bprm->filename);
++
++	if (bhv_guestlog_log_process_events()) {
++		bhv_guestlog_log_process_exec(
++			current->pid, current->parent->pid, bprm->filename);
++	}
++
++	if (bhv_acl_is_proc_acl_enabled()) {
++		if (bhv_block_process(bprm->filename))
++			return -EPERM;
++	}
++
++	return 0;
++}
++
++static struct security_hook_list bhv_hooks[] __lsm_ro_after_init = {
++	LSM_HOOK_INIT(kernel_read_file, bhv_read_file), // finit_module
++	LSM_HOOK_INIT(kernel_load_data, bhv_load_data), // init_module
++	LSM_HOOK_INIT(task_alloc, bhv_task_alloc), // fork
++	LSM_HOOK_INIT(task_free, bhv_task_free), // exit
++	LSM_HOOK_INIT(bprm_check_security, bhv_bprm_check_security), // execve
++};
++
++static int __init bhv_init(void)
++{
++	pr_info("[bhv] LSM active");
++	security_add_hooks(bhv_hooks, ARRAY_SIZE(bhv_hooks), "bhv");
++	return 0;
++}
++
++DEFINE_LSM(bhv) = {
++	.name = "bhv",
++	.init = bhv_init,
++};
