@@ -4107,10 +4107,10 @@ index 000000000000..4fa9b07d9f5f
 +obj-$(CONFIG_BHV_VAS)		+= creds.o
 diff --git kernel/bhv/acl.c kernel/bhv/acl.c
 new file mode 100644
-index 000000000000..75e33f67225a
+index 000000000000..8dc5e48b9931
 --- /dev/null
 +++ kernel/bhv/acl.c
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,293 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -4191,18 +4191,22 @@ index 000000000000..75e33f67225a
 +	}
 +
 +	// Protect memory
-+	config_region.bhv_mem_region_create.start_addr =
-+		virt_to_phys(acl_config);
-+	config_region.bhv_mem_region_create.size =
-+		acl_config->num_pages * PAGE_SIZE;
-+	config_region.bhv_mem_region_create.type = BHV_MEM_TYPE_DATA_READ_ONLY;
-+	config_region.bhv_mem_region_create.flags = BHV_MEM_FLAGS_NONE;
-+	config_region.bhv_mem_region_create.next = BHV_INVALID_PHYS_ADDR;
++	if (bhv_integrity_is_enabled()) {
++		config_region.bhv_mem_region_create.start_addr =
++			virt_to_phys(acl_config);
++		config_region.bhv_mem_region_create.size =
++			acl_config->num_pages * PAGE_SIZE;
++		config_region.bhv_mem_region_create.type =
++			BHV_MEM_TYPE_DATA_READ_ONLY;
++		config_region.bhv_mem_region_create.flags = BHV_MEM_FLAGS_NONE;
++		config_region.bhv_mem_region_create.next =
++			BHV_INVALID_PHYS_ADDR;
 +
-+	r = bhv_create_kern_phys_mem_region_hyp(0, &config_region);
-+	if (r) {
-+		pr_err("Unable to protect acl config");
-+		return;
++		r = bhv_create_kern_phys_mem_region_hyp(0, &config_region);
++		if (r) {
++			pr_err("Unable to protect acl config");
++			return;
++		}
 +	}
 +
 +	*global_acl_config = acl_config;
