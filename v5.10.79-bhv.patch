@@ -4850,10 +4850,10 @@ index 000000000000..fae31bddbe65
 +
 diff --git kernel/bhv/guestlog.c kernel/bhv/guestlog.c
 new file mode 100644
-index 000000000000..468738d70304
+index 000000000000..1d7d4874d562
 --- /dev/null
 +++ kernel/bhv/guestlog.c
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,248 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -4863,6 +4863,7 @@ index 000000000000..468738d70304
 + */
 +#include <linux/net.h>
 +#include <linux/socket.h>
++#include <linux/reboot.h>
 +#include <linux/workqueue.h>
 +#include <net/net_namespace.h>
 +
@@ -5024,6 +5025,21 @@ index 000000000000..468738d70304
 +	return bhv_guestlog_send(&msg);
 +}
 +
++static int bhv_guestlog_reboot(struct notifier_block *notifier,
++			       unsigned long val, void *v)
++{
++	if (vsock) {
++		sock_release(vsock);
++		vsock = NULL;
++	}
++	return NOTIFY_OK;
++}
++
++static struct notifier_block bhv_guestlog_reboot_notifier = {
++	.notifier_call = bhv_guestlog_reboot,
++	.priority = 0,
++};
++
 +void bhv_guestlog_start(void)
 +{
 +	int err;
@@ -5050,6 +5066,8 @@ index 000000000000..468738d70304
 +		bhv_fail("GuestLog: Could not connect to host (%d)", err);
 +		return;
 +	}
++
++	register_reboot_notifier(&bhv_guestlog_reboot_notifier);
 +}
 +
 +void __init bhv_guestlog_init()
