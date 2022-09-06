@@ -770,7 +770,7 @@ index 331394306cce..0cdb121c095d 100644
  
  static __always_inline unsigned long __kern_hyp_va(unsigned long v)
 diff --git arch/arm64/kernel/alternative.c arch/arm64/kernel/alternative.c
-index 73039949b5ce..f97b2a9f2730 100644
+index 73039949b5ce..12cdee47c9da 100644
 --- arch/arm64/kernel/alternative.c
 +++ arch/arm64/kernel/alternative.c
 @@ -17,6 +17,9 @@
@@ -822,16 +822,19 @@ index 73039949b5ce..f97b2a9f2730 100644
  	for (alt = region->begin; alt < region->end; alt++) {
  		int nr_inst;
  
-@@ -167,7 +183,7 @@ static void __apply_alternatives(void *alt_region,  bool is_module,
+@@ -167,7 +183,11 @@ static void __apply_alternatives(void *alt_region,  bool is_module,
  		else
  			alt_cb  = ALT_REPL_PTR(alt);
  
--		alt_cb(alt, origptr, updptr, nr_inst);
++#ifdef CONFIG_BHV_VAS
 +		alt_cb(alt, origptr, updptr, nr_inst, NULL);
++#else
+ 		alt_cb(alt, origptr, updptr, nr_inst);
++#endif
  
  		if (!is_module) {
  			clean_dcache_range_nopatch((u64)origptr,
-@@ -254,10 +270,15 @@ void apply_alternatives_module(void *start, size_t length)
+@@ -254,10 +274,15 @@ void apply_alternatives_module(void *start, size_t length)
  		.begin	= start,
  		.end	= start + length,
  	};
@@ -4850,10 +4853,10 @@ index 000000000000..fae31bddbe65
 +
 diff --git kernel/bhv/guestlog.c kernel/bhv/guestlog.c
 new file mode 100644
-index 000000000000..1d7d4874d562
+index 000000000000..f80abf2bde67
 --- /dev/null
 +++ kernel/bhv/guestlog.c
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,304 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -4861,10 +4864,14 @@ index 000000000000..1d7d4874d562
 + *          Sergej Proskurin <sergej@bedrocksystems.com>
 + *          Sebastian Vogl <sebastian@bedrocksystems.com>
 + */
++#include <linux/atomic.h>
 +#include <linux/net.h>
 +#include <linux/socket.h>
++#include <linux/types.h>
 +#include <linux/reboot.h>
 +#include <linux/workqueue.h>
++#include <linux/list.h>
++#include <linux/spinlock.h>
 +#include <net/net_namespace.h>
 +
 +#include <net/vsock_addr.h>
@@ -4875,54 +4882,97 @@ index 000000000000..1d7d4874d562
 +#include <bhv/interface/hypercall.h>
 +#include <bhv/interface/guestlog.h>
 +
++typedef struct {
++	guestlog_msg_t msg;
++	size_t to_send;
++	struct list_head list;
++} bhv_guestlog_send_item_t;
++
 +bhv_guestlog_config_t bhv_guestlog_config __ro_after_init = { false, 0 };
 +static struct socket *vsock = NULL;
 +
-+typedef struct {
-+	guestlog_msg_t msg;
-+	struct work_struct work;
-+} bhv_guestlog_work_item_t;
-+static struct workqueue_struct *queue = NULL;
-+static struct kmem_cache *bhv_guestlog_work_cache;
++static atomic_t workqueue_ready = ATOMIC_INIT(0);
++static LIST_HEAD(bhv_guestlog_msg_list);
++static DEFINE_SPINLOCK(bhv_guestlog_msg_lock);
 +
-+static void bhv_guestlog_sendmsg(struct work_struct *work)
++static struct workqueue_struct *bhv_guestlog_workqueue = NULL;
++static struct work_struct bhv_guestlog_work_struct;
++static struct delayed_work bhv_guestlog_delayed_work_struct;
++static struct kmem_cache *bhv_guestlog_send_item_cache;
++
++static inline size_t bhv_send(void *data, size_t size, size_t to_send)
 +{
-+	bhv_guestlog_work_item_t *item =
-+		container_of(work, bhv_guestlog_work_item_t, work);
-+	struct kvec vec = { .iov_base = &item->msg,
-+			    .iov_len = item->msg.header.sz };
++	int r;
++	struct kvec vec;
 +	struct msghdr msghdr = { .msg_flags = MSG_DONTWAIT };
++	while (to_send > 0) {
++		vec.iov_base = data + (size - to_send);
++		vec.iov_len = to_send;
++		r = kernel_sendmsg(vsock, &msghdr, &vec, 1, vec.iov_len);
++		if (r == -EAGAIN) {
++			return to_send;
++		} else if (r < 0) {
++			pr_err("BHV GuestLog: Send Failed (%d)", r);
++			return 0;
++		}
++		to_send -= r;
++	}
++	return 0;
++}
 +
-+	int err = kernel_sendmsg(vsock, &msghdr, &vec, 1, vec.iov_len);
-+	if (err < 0)
-+		pr_err("BHV GuestLog: Send Failed (%d)", err);
++static void bhv_guestlog_sendmsg(struct work_struct *ws)
++{
++	bhv_guestlog_send_item_t *item;
 +
-+	// Free memory.
-+	kmem_cache_free(bhv_guestlog_work_cache, item);
++	while (true) {
++		spin_lock(&bhv_guestlog_msg_lock);
++		if (list_empty(&bhv_guestlog_msg_list)) {
++			spin_unlock(&bhv_guestlog_msg_lock);
++			return;
++		}
++		item = list_first_entry(&bhv_guestlog_msg_list,
++					bhv_guestlog_send_item_t, list);
++		spin_unlock(&bhv_guestlog_msg_lock);
++
++		item->to_send = bhv_send(&item->msg, item->msg.header.sz,
++					 item->to_send);
++
++		if (item->to_send == 0) {
++			spin_lock(&bhv_guestlog_msg_lock);
++			list_del(&(item->list));
++			spin_unlock(&bhv_guestlog_msg_lock);
++			kmem_cache_free(bhv_guestlog_send_item_cache, item);
++		} else {
++			queue_delayed_work(bhv_guestlog_workqueue,
++					   &bhv_guestlog_delayed_work_struct,
++					   msecs_to_jiffies(1000));
++			return;
++		}
++	}
 +}
 +
 +static inline int bhv_guestlog_send(guestlog_msg_t *msg)
 +{
-+	bhv_guestlog_work_item_t *cur = NULL;
++	bhv_guestlog_send_item_t *cur;
 +
-+	if (vsock != NULL) {
-+		pr_debug("BHV GuestLog: Queuing msg of type %u with size %u",
-+			 msg->header.type, msg->header.sz);
++	pr_debug("BHV GuestLog: Queuing msg of type %u with size %u",
++		 msg->header.type, msg->header.sz);
 +
-+		// Allocate work item.
-+		cur = kmem_cache_alloc(bhv_guestlog_work_cache, GFP_KERNEL);
-+		if (cur == NULL) {
-+			bhv_fail("BHV: Unable to allocate work item");
-+			return -ENOMEM;
-+		}
-+
-+		// Init
-+		INIT_WORK(&cur->work, bhv_guestlog_sendmsg);
-+		memcpy(&cur->msg, msg, sizeof(cur->msg));
-+
-+		// Queue
-+		queue_work(queue, &cur->work);
++	cur = kmem_cache_alloc(bhv_guestlog_send_item_cache, GFP_KERNEL);
++	if (cur == NULL) {
++		bhv_fail("BHV: Unable to allocate send item");
++		return -ENOMEM;
 +	}
++
++	memcpy(&cur->msg, msg, sizeof(cur->msg));
++	cur->to_send = msg->header.sz;
++
++	spin_lock(&bhv_guestlog_msg_lock);
++	list_add_tail(&(cur->list), &bhv_guestlog_msg_list);
++	spin_unlock(&bhv_guestlog_msg_lock);
++
++	if (atomic_read(&workqueue_ready))
++		queue_work(bhv_guestlog_workqueue, &bhv_guestlog_work_struct);
 +
 +	return 0;
 +}
@@ -5067,7 +5117,23 @@ index 000000000000..1d7d4874d562
 +		return;
 +	}
 +
++	// Initialize work queue
++	INIT_WORK(&bhv_guestlog_work_struct, bhv_guestlog_sendmsg);
++	INIT_DELAYED_WORK(&bhv_guestlog_delayed_work_struct,
++			  bhv_guestlog_sendmsg);
++	bhv_guestlog_workqueue =
++		alloc_workqueue("bhv_guestlog_workqueue", WQ_UNBOUND, 1);
++	// queue = create_singlethread_workqueue("bhv_guestlog_work_queue");
++	if (bhv_guestlog_workqueue == NULL) {
++		bhv_fail("BHV: Could not allocate work queue!");
++		kmem_cache_destroy(bhv_guestlog_send_item_cache);
++		return;
++	}
++	atomic_inc(&workqueue_ready);
++
 +	register_reboot_notifier(&bhv_guestlog_reboot_notifier);
++
++	queue_work(bhv_guestlog_workqueue, &bhv_guestlog_work_struct);
 +}
 +
 +void __init bhv_guestlog_init()
@@ -5078,19 +5144,12 @@ index 000000000000..1d7d4874d562
 +		return;
 +
 +	// Create cache
-+	bhv_guestlog_work_cache = kmem_cache_create(
-+		"bhv_guestlog_work_cache", sizeof(bhv_guestlog_work_item_t), 0,
++	bhv_guestlog_send_item_cache = kmem_cache_create(
++		"bhv_guestlog_send_item_cache",
++		sizeof(bhv_guestlog_send_item_t), 0,
 +		SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
-+	if (bhv_guestlog_work_cache == NULL) {
++	if (bhv_guestlog_send_item_cache == NULL) {
 +		bhv_fail("BHV: Could not create kmem_cache for work items!");
-+		return;
-+	}
-+
-+	// Initialize work queue
-+	queue = alloc_workqueue("bhv_guestlog_work_queue", 0, 0);
-+	if (queue == NULL) {
-+		bhv_fail("BHV: Could not allocate work queue!");
-+		kmem_cache_destroy(bhv_guestlog_work_cache);
 +		return;
 +	}
 +
