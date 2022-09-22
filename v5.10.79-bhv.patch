@@ -4853,10 +4853,10 @@ index 000000000000..fae31bddbe65
 +
 diff --git kernel/bhv/guestlog.c kernel/bhv/guestlog.c
 new file mode 100644
-index 000000000000..f80abf2bde67
+index 000000000000..6b8c49e12be6
 --- /dev/null
 +++ kernel/bhv/guestlog.c
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,323 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -4892,6 +4892,7 @@ index 000000000000..f80abf2bde67
 +static struct socket *vsock = NULL;
 +
 +static atomic_t workqueue_ready = ATOMIC_INIT(0);
++static atomic_t reboot_in_progress = ATOMIC_INIT(0);
 +static LIST_HEAD(bhv_guestlog_msg_list);
 +static DEFINE_SPINLOCK(bhv_guestlog_msg_lock);
 +
@@ -4968,6 +4969,13 @@ index 000000000000..f80abf2bde67
 +	cur->to_send = msg->header.sz;
 +
 +	spin_lock(&bhv_guestlog_msg_lock);
++
++	if (unlikely(atomic_read(&reboot_in_progress))) {
++		spin_unlock(&bhv_guestlog_msg_lock);
++		kmem_cache_free(bhv_guestlog_send_item_cache, cur);
++		return 0;
++	}
++
 +	list_add_tail(&(cur->list), &bhv_guestlog_msg_list);
 +	spin_unlock(&bhv_guestlog_msg_lock);
 +
@@ -5078,7 +5086,18 @@ index 000000000000..f80abf2bde67
 +static int bhv_guestlog_reboot(struct notifier_block *notifier,
 +			       unsigned long val, void *v)
 +{
-+	if (vsock) {
++	if (atomic_read(&workqueue_ready)) {
++		atomic_inc(&reboot_in_progress);
++
++		while (true) {
++			spin_lock(&bhv_guestlog_msg_lock);
++			if (list_empty(&bhv_guestlog_msg_list)) {
++				spin_unlock(&bhv_guestlog_msg_lock);
++				break;
++			}
++			spin_unlock(&bhv_guestlog_msg_lock);
++		}
++
 +		sock_release(vsock);
 +		vsock = NULL;
 +	}
