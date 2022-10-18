@@ -2940,6 +2940,70 @@ index 000000000000..81a73366fb15
 +#endif /* CONFIG_BHV_VAS */
 +
 +#endif /* __BHV_CREDS_H__ */
+diff --git include/bhv/file_protection.h include/bhv/file_protection.h
+new file mode 100644
+index 000000000000..967b39f6629a
+--- /dev/null
++++ include/bhv/file_protection.h
+@@ -0,0 +1,57 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sebastian Vogl <sebastian@bedrocksystems.com>
++ *          Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
++#ifndef __BHV_FILE_PROTECTION_H__
++#define __BHV_FILE_PROTECTION_H__
++
++#ifdef CONFIG_BHV_VAS
++#include <linux/init.h>
++
++#include <bhv/bhv.h>
++#include <bhv/interface/common.h>
++#include <bhv/interface/file_protection.h>
++
++extern bhv_file_protection_config_t bhv_file_protection_config __ro_after_init;
++
++void __init bhv_file_protection_init(void);
++
++static inline bool bhv_file_protection_is_enabled(void)
++{
++	if (!is_bhv_initialized() || bhv_configuration_bitmap == NULL)
++		return false;
++
++	return (bool)test_bit(BHV_CONFIG_FILE_PROTECTION,
++			      bhv_configuration_bitmap);
++}
++
++static inline bool bhv_read_only_file_protection_is_enabled(void)
++{
++	{
++		if (!bhv_file_protection_is_enabled())
++			return false;
++
++		if (!test_bit(
++			    BHV_VAS_FILE_PROTECTION_FEATURE_READ_ONLY_FILE_PROTECTION,
++			    (unsigned long *)&bhv_file_protection_config
++				    .feature_bitmap))
++			return false;
++
++		return true;
++	}
++}
++
++bool bhv_block_read_only_file_write(const char *target);
++
++#else /* CONFIG_BHV_VAS */
++
++static inline bool bhv_file_protection_is_enabled(void)
++{
++	return false;
++}
++
++#endif /* CONFIG_BHV_VAS */
++#endif /* __BHV_FILE_PROTECTION_H__ */
+\ No newline at end of file
 diff --git include/bhv/guestlog.h include/bhv/guestlog.h
 new file mode 100644
 index 000000000000..f7ab25e0c726
@@ -3301,10 +3365,10 @@ index 000000000000..c6822e3027c2
 +#endif /* __BHV_INTERFACE_ACL_H__ */
 diff --git include/bhv/interface/common.h include/bhv/interface/common.h
 new file mode 100644
-index 000000000000..f6e5c8f52423
+index 000000000000..219d971e3e78
 --- /dev/null
 +++ include/bhv/interface/common.h
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,40 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -3331,6 +3395,7 @@ index 000000000000..f6e5c8f52423
 +#define BHV_VAS_BACKEND_ACL 5
 +#define BHV_VAS_BACKEND_GUESTLOG 6
 +#define BHV_VAS_BACKEND_CREDS 7
++#define BHV_VAS_BACKEND_FILE_PROTECTION 8
 +
 +/* BHV CONFIGURATION BITS */
 +#define BHV_CONFIG_INTEGRITY 0
@@ -3338,6 +3403,7 @@ index 000000000000..f6e5c8f52423
 +#define BHV_CONFIG_DRIVER_ACL 2
 +#define BHV_CONFIG_LOGGING 3
 +#define BHV_CONFIG_CREDS 4
++#define BHV_CONFIG_FILE_PROTECTION 5
 +
 +/* Common Defines */
 +#define BHV_INVALID_PHYS_ADDR (~0ULL)
@@ -3439,6 +3505,41 @@ index 000000000000..3bdee7376b06
 +} __attribute__((__packed__)) bhv_creds_arg_t;
 +
 +#endif /* __BHV_INTERFACE_CREDS_H__ */
+diff --git include/bhv/interface/file_protection.h include/bhv/interface/file_protection.h
+new file mode 100644
+index 000000000000..095a9dbc36ac
+--- /dev/null
++++ include/bhv/interface/file_protection.h
+@@ -0,0 +1,29 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Sebastian Vogl <sebastian@bedrocksystems.com>
++ *          Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
++#ifndef __BHV_INTERFACE_FILE_PROTECTION_H__
++#define __BHV_INTERFACE_FILE_PROTECTION_H__
++
++#include <linux/types.h>
++
++/* BHV VAS FILE PROTECTION BACKEND OPS */
++#define BHV_VAS_FILE_PROTECTION_OP_INIT 0U
++#define BHV_VAS_FILE_PROTECTION_OP_VIOLATION_READ_ONLY_FILE_PROTECTION 1U
++
++/* BHV VAS FILE PROTECTION FEATURES */
++#define BHV_VAS_FILE_PROTECTION_FEATURE_READ_ONLY_FILE_PROTECTION 0U
++
++typedef struct {
++	uint64_t feature_bitmap;
++} __attribute__((__packed__)) bhv_file_protection_config_t;
++
++typedef struct {
++	uint64_t name;
++	uint16_t name_len;
++	uint8_t block;
++} __attribute__((__packed__)) bhv_file_protection_violation_t;
++#endif /* __BHV_INTERFACE_FILE_PROTECTION_H__ */
 diff --git include/bhv/interface/guestlog.h include/bhv/interface/guestlog.h
 new file mode 100644
 index 000000000000..a2a894f78480
@@ -4085,10 +4186,10 @@ index 000000000000..efb414dc06a9
 +	  Say Y if you want to include DEBUG output when using BHV VAS.
 diff --git kernel/bhv/Makefile kernel/bhv/Makefile
 new file mode 100644
-index 000000000000..4fa9b07d9f5f
+index 000000000000..1b9e3679c14f
 --- /dev/null
 +++ kernel/bhv/Makefile
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,20 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +
 +# Copyright (C) 2022 - BedRock Systems Inc
@@ -4108,12 +4209,13 @@ index 000000000000..4fa9b07d9f5f
 +obj-$(CONFIG_BHV_VAS)		+= acl.o
 +obj-$(CONFIG_BHV_VAS)		+= guestlog.o
 +obj-$(CONFIG_BHV_VAS)		+= creds.o
++obj-$(CONFIG_BHV_VAS)		+= file_protection.o
 diff --git kernel/bhv/acl.c kernel/bhv/acl.c
 new file mode 100644
-index 000000000000..8dc5e48b9931
+index 000000000000..b319213d5602
 --- /dev/null
 +++ kernel/bhv/acl.c
-@@ -0,0 +1,293 @@
+@@ -0,0 +1,298 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -4284,12 +4386,6 @@ index 000000000000..8dc5e48b9931
 +
 +	BUG_ON(target[0] != PATH_DELIMITER);
 +
-+	if (acl_config == NULL)
-+		return false;
-+
-+	if (!acl_config->valid)
-+		return false;
-+
 +	// Get target len
 +	target_len = strnlen(target, PATH_MAX);
 +	if (strip_ext) {
@@ -4344,13 +4440,20 @@ index 000000000000..8dc5e48b9931
 +	// will update it.
 +	bhv_acl_violation_t *volatile acl_violation = NULL;
 +	size_t target_len = strlen(target);
-+	bool m = _matches(target, strip_ext, acl_config);
++	bool m;
++
++	if (acl_config == NULL || !acl_config->valid) {
++		bhv_fail("unable to resolve entity due to init error");
++		return false;
++	}
++
++	m = _matches(target, strip_ext, acl_config);
 +
 +	// Is this entity part of the allow list?
-+	if (acl_config->is_allow && m)
++	if (m && acl_config->is_allow)
 +		return false;
 +	// Is this entity _NOT_ in the deny list?
-+	else if (!acl_config->is_allow && !m)
++	if (!m && !acl_config->is_allow)
 +		return false;
 +
 +	BUG_ON(target_len >= PAGE_SIZE);
@@ -4404,16 +4507,20 @@ index 000000000000..8dc5e48b9931
 +		return true;
 +	}
 +
++	if (target[0] != PATH_DELIMITER) {
++		return false;
++	}
++
 +	return _block_entity(target, false, process_acl_config,
 +			     BHV_VAS_ACL_OP_VIOLATION_PROC_ACL);
 +}
 \ No newline at end of file
 diff --git kernel/bhv/bhv.c kernel/bhv/bhv.c
 new file mode 100644
-index 000000000000..07652cf56598
+index 000000000000..e88d27542e18
 --- /dev/null
 +++ kernel/bhv/bhv.c
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,26 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -4425,6 +4532,7 @@ index 000000000000..07652cf56598
 +#include <bhv/integrity.h>
 +#include <bhv/guestlog.h>
 +#include <bhv/patch.h>
++#include <bhv/file_protection.h>
 +
 +#include <bhv/bhv.h>
 +
@@ -4437,6 +4545,7 @@ index 000000000000..07652cf56598
 +	bhv_acl_mm_init();
 +	bhv_guestlog_init();
 +	bhv_cred_mm_init();
++	bhv_file_protection_init();
 +}
 diff --git kernel/bhv/creds.c kernel/bhv/creds.c
 new file mode 100644
@@ -4851,6 +4960,102 @@ index 000000000000..fae31bddbe65
 +	return 0;
 +}
 +
+diff --git kernel/bhv/file_protection.c kernel/bhv/file_protection.c
+new file mode 100644
+index 000000000000..0b0943222ad9
+--- /dev/null
++++ kernel/bhv/file_protection.c
+@@ -0,0 +1,89 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ */
++#include <bhv/bhv_print.h>
++
++#include <linux/cache.h>
++#include <linux/gfp.h>
++#include <linux/limits.h>
++#include <linux/types.h>
++#include <linux/slab.h>
++
++#include <bhv/bhv.h>
++#include <bhv/interface/common.h>
++#include <bhv/interface/hypercall.h>
++#include <bhv/interface/file_protection.h>
++
++#include <bhv/file_protection.h>
++
++bhv_file_protection_config_t bhv_file_protection_config __ro_after_init = { 0 };
++
++struct kmem_cache *bhv_file_protection_violation_cache;
++
++void __init bhv_file_protection_init(void)
++{
++	unsigned long r;
++
++	if (!bhv_file_protection_is_enabled())
++		return;
++
++	// Create slab cache
++	bhv_file_protection_violation_cache = kmem_cache_create(
++		"bhv_file_protection_violation_cache",
++		sizeof(bhv_file_protection_violation_t), 0,
++		SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
++	if (bhv_file_protection_violation_cache == NULL) {
++		bhv_fail("BHV: Could not create kmem_cache for work items!");
++		return;
++	}
++
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_FILE_PROTECTION,
++			      BHV_VAS_FILE_PROTECTION_OP_INIT,
++			      &bhv_file_protection_config);
++	if (r) {
++		pr_err("File protection init failed");
++		return;
++	}
++}
++
++bool bhv_block_read_only_file_write(const char *target)
++{
++	unsigned long r;
++	bool rv;
++	bhv_file_protection_violation_t *volatile violation = NULL;
++
++	if (!bhv_read_only_file_protection_is_enabled())
++		return false;
++
++	// Prepare hypercall
++	violation = kmem_cache_alloc(bhv_file_protection_violation_cache,
++				     GFP_KERNEL);
++	if (violation == NULL) {
++		bhv_fail("Unable to allocate file protection violation");
++		return true;
++	}
++
++	// Setup arg
++	violation->name_len = strlen(target);
++	violation->name = virt_to_phys((volatile void *)target);
++
++	// Hypercall
++	r = bhv_hypercall_vas(
++		BHV_VAS_BACKEND_FILE_PROTECTION,
++		BHV_VAS_FILE_PROTECTION_OP_VIOLATION_READ_ONLY_FILE_PROTECTION,
++		violation);
++	if (r) {
++		pr_err("file protection violation hypercall failed");
++		kmem_cache_free(bhv_file_protection_violation_cache, violation);
++		return true;
++	}
++
++	// Read block and free
++	rv = (bool)violation->block;
++	kmem_cache_free(bhv_file_protection_violation_cache, violation);
++	return rv;
++}
+\ No newline at end of file
 diff --git kernel/bhv/guestlog.c kernel/bhv/guestlog.c
 new file mode 100644
 index 000000000000..6b8c49e12be6
@@ -6599,15 +6804,19 @@ index 000000000000..f921bdf385ea
 +obj-$(CONFIG_SECURITY_BHV) += bhv.o
 diff --git security/bhv/bhv.c security/bhv/bhv.c
 new file mode 100644
-index 000000000000..56ca69a80ac4
+index 000000000000..26588e495da9
 --- /dev/null
 +++ security/bhv/bhv.c
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,247 @@
 +#include <linux/lsm_hooks.h>
 +#include <linux/binfmts.h>
++#include <uapi/linux/magic.h>
++#include <linux/pipe_fs_i.h>
++#include <linux/fdtable.h>
 +
 +#include <bhv/acl.h>
 +#include <bhv/guestlog.h>
++#include <bhv/file_protection.h>
 +
 +static int bhv_read_file(struct file *file, enum kernel_read_file_id id,
 +			 bool whole_file)
@@ -6617,7 +6826,7 @@ index 000000000000..56ca69a80ac4
 +		char *filename_buf = NULL;
 +
 +		if (file != NULL && whole_file) {
-+			filename_buf = (char *)__get_free_pages(GFP_KERNEL, 0);
++			filename_buf = (char *)__get_free_page(GFP_KERNEL);
 +			if (filename_buf == NULL) {
 +				bhv_fail(
 +					"BHV: Unable to allocate acl violation filename buf");
@@ -6627,27 +6836,26 @@ index 000000000000..56ca69a80ac4
 +				d_path(&file->f_path, filename_buf, PAGE_SIZE);
 +			if (IS_ERR(filename))
 +				filename = NULL;
-+			pr_debug("[bhv] READ DATA HOOK: %s", filename);
-+
-+			if (bhv_guestlog_log_driver_events()) {
-+				if (filename != NULL)
-+					bhv_guestlog_log_driver_load(filename);
-+				else
-+					bhv_guestlog_log_driver_load(
-+						"[ UNKNOWN DRIVER ]");
-+			}
 +		}
 +
 +		if (bhv_acl_is_driver_acl_enabled()) {
 +			if (bhv_block_driver(filename)) {
 +				if (filename_buf)
-+					free_pages((unsigned long)filename_buf,
-+						   0);
++					free_page((unsigned long)filename_buf);
 +				return -EPERM;
 +			}
 +		}
++
++		if (bhv_guestlog_log_driver_events()) {
++			if (filename != NULL)
++				bhv_guestlog_log_driver_load(filename);
++			else
++				bhv_guestlog_log_driver_load(
++					"[ UNKNOWN DRIVER ]");
++		}
++
 +		if (filename_buf)
-+			free_pages((unsigned long)filename_buf, 0);
++			free_page((unsigned long)filename_buf);
 +	}
 +	return 0;
 +}
@@ -6658,13 +6866,13 @@ index 000000000000..56ca69a80ac4
 +	pr_debug("[bhv] LOAD DATA HOOK: %s", origin);
 +
 +	if (id == LOADING_MODULE) {
-+		if (bhv_guestlog_log_driver_events()) {
-+			bhv_guestlog_log_driver_load("[ UNKNOWN DRIVER ]");
-+		}
-+
 +		if (bhv_acl_is_driver_acl_enabled()) {
 +			if (bhv_block_driver(NULL))
 +				return -EPERM;
++		}
++
++		if (bhv_guestlog_log_driver_events()) {
++			bhv_guestlog_log_driver_load("[ UNKNOWN DRIVER ]");
 +		}
 +	}
 +
@@ -6679,16 +6887,10 @@ index 000000000000..56ca69a80ac4
 +	pr_debug("\t-> PPID: %d", target->parent->pid);
 +	pr_debug("\t-> NAME: %s", target->comm);
 +
-+	if (bhv_guestlog_log_process_events()) {
-+		bhv_guestlog_log_process_fork(target->pid, target->comm,
-+					      target->parent->pid,
-+					      target->parent->comm);
-+	}
-+
 +	// Filters kernel treads
 +	if (bhv_acl_is_proc_acl_enabled() && target->mm != NULL) {
 +		char *filename = NULL;
-+		char *filename_buf = (char *)__get_free_pages(GFP_KERNEL, 0);
++		char *filename_buf = (char *)__get_free_page(GFP_KERNEL);
 +		if (filename_buf == NULL) {
 +			bhv_fail(
 +				"BHV: Unable to allocate acl violation filename buf");
@@ -6699,10 +6901,16 @@ index 000000000000..56ca69a80ac4
 +		if (IS_ERR(filename))
 +			filename = NULL;
 +		if (bhv_block_process(filename)) {
-+			free_pages((unsigned long)filename_buf, 0);
++			free_page((unsigned long)filename_buf);
 +			return -EPERM;
 +		}
-+		free_pages((unsigned long)filename_buf, 0);
++		free_page((unsigned long)filename_buf);
++	}
++
++	if (bhv_guestlog_log_process_events()) {
++		bhv_guestlog_log_process_fork(target->pid, target->comm,
++					      target->parent->pid,
++					      target->parent->comm);
 +	}
 +
 +	return 0;
@@ -6723,17 +6931,105 @@ index 000000000000..56ca69a80ac4
 +
 +static int bhv_bprm_check_security(struct linux_binprm *bprm)
 +{
++	int rv = 0;
 +	pr_debug("[bhv] BPRM CHECK SECURITY HOOK:");
 +	pr_debug("\t-> FILENAME: %s", bprm->filename);
 +
-+	if (bhv_guestlog_log_process_events()) {
-+		bhv_guestlog_log_process_exec(
-+			current->pid, current->parent->pid, bprm->filename);
++	if (bhv_guestlog_log_process_events() ||
++	    bhv_acl_is_proc_acl_enabled()) {
++		const char *filename = NULL;
++		char *filename_buf = (char *)__get_free_page(GFP_KERNEL);
++		if (filename_buf == NULL) {
++			bhv_fail(
++				"BHV: Unable to allocate acl violation filename buf");
++			return -ENOMEM;
++		}
++		filename = d_path(&bprm->file->f_path, filename_buf, PAGE_SIZE);
++		if (IS_ERR(filename))
++			filename = NULL;
++
++		if (bhv_acl_is_proc_acl_enabled()) {
++			// check executed filename (name on cli)
++			if (bhv_block_process(bprm->filename)) {
++				free_page((unsigned long)filename_buf);
++				return -EPERM;
++			}
++
++			// check underlying file (e.g., busybox or interpreter)
++			if (bhv_block_process(filename)) {
++				free_page((unsigned long)filename_buf);
++				return -EPERM;
++			}
++		}
++
++		if (bhv_guestlog_log_process_events()) {
++			bhv_guestlog_log_process_exec(current->pid,
++						      current->parent->pid,
++						      bprm->filename);
++		}
++
++		free_page((unsigned long)filename_buf);
 +	}
 +
-+	if (bhv_acl_is_proc_acl_enabled()) {
-+		if (bhv_block_process(bprm->filename))
-+			return -EPERM;
++	return rv;
++}
++
++static int bhv_check_files_dirty_pipe(const void *address_space,
++				      struct file *file, unsigned int number)
++{
++	static char filename_buf[PAGE_SIZE];
++	const char *filename = NULL;
++
++	/*
++	 * We check whether the mapping is the same between the pipe and a file that
++	 * we have opened in the current process. In addition, we check whether the
++	 * file is readonly.
++	 */
++	if (file->f_mapping == address_space &&
++	    !(file->f_mode & FMODE_CAN_WRITE)) {
++		// Get Path of the file we are trying to write
++		filename = d_path(&file->f_path, filename_buf,
++				  sizeof(filename_buf));
++		if (IS_ERR(filename))
++			filename = "UNKNOWN";
++
++		// Ask the HOST whether we should block this attempt.
++		return bhv_block_read_only_file_write(filename);
++	}
++
++	return 0;
++}
++
++static int bhv_file_permission(struct file *file, int mask)
++{
++	struct pipe_inode_info *info;
++	struct pipe_buffer *buf;
++
++	if (!bhv_read_only_file_protection_is_enabled())
++		return 0;
++
++	/*
++	 * Dirty pipe detection. Whenever we write to a file and this file is
++	 * a pipe, we are going to check whether this pipe points to a read-only
++	 * file. This check happens in `bhv_check_files_dirty_pipe` above.
++	 */
++	if ((mask & MAY_WRITE) == MAY_WRITE && file->f_inode &&
++	    file->f_inode->i_sb->s_magic == PIPEFS_MAGIC) {
++		// This seems to be a pipe
++		info = file->private_data;
++		if (!info)
++			return 0;
++
++		// Check current buffer in the pipe for dirty pipe
++		buf = &info->bufs[(info->head - 1) & (info->ring_size - 1)];
++		// Iterate over all open files and see whether the pipe points to the same file.
++		if (buf && buf->page && current->files) {
++			if (iterate_fd(current->files, 0,
++				       bhv_check_files_dirty_pipe,
++				       buf->page->mapping)) {
++				return 1;
++			}
++		}
 +	}
 +
 +	return 0;
@@ -6745,6 +7041,7 @@ index 000000000000..56ca69a80ac4
 +	LSM_HOOK_INIT(task_alloc, bhv_task_alloc), // fork
 +	LSM_HOOK_INIT(task_free, bhv_task_free), // exit
 +	LSM_HOOK_INIT(bprm_check_security, bhv_bprm_check_security), // execve
++	LSM_HOOK_INIT(file_permission, bhv_file_permission), // file read/write
 +};
 +
 +static int __init bhv_init(void)
