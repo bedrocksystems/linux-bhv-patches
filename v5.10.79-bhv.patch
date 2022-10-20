@@ -1,5 +1,5 @@
 diff --git arch/arm64/Kbuild arch/arm64/Kbuild
-index d6465823b281..f1ea15a79b5a 100644
+index d6465823b..f1ea15a79 100644
 --- arch/arm64/Kbuild
 +++ arch/arm64/Kbuild
 @@ -3,4 +3,5 @@ obj-y			+= kernel/ mm/
@@ -9,7 +9,7 @@ index d6465823b281..f1ea15a79b5a 100644
 +obj-$(CONFIG_BHV_VAS)	+= bhv/
  obj-$(CONFIG_CRYPTO)	+= crypto/
 diff --git arch/arm64/Kconfig arch/arm64/Kconfig
-index 5e5cf3af6351..1ed9422f27f4 100644
+index 5e5cf3af6..1ed9422f2 100644
 --- arch/arm64/Kconfig
 +++ arch/arm64/Kconfig
 @@ -1149,6 +1149,16 @@ config XEN
@@ -31,7 +31,7 @@ index 5e5cf3af6351..1ed9422f27f4 100644
  	default "14" if (ARM64_64K_PAGES && TRANSPARENT_HUGEPAGE)
 diff --git arch/arm64/bhv/Makefile arch/arm64/bhv/Makefile
 new file mode 100644
-index 000000000000..e66e83fdb5eb
+index 000000000..e66e83fdb
 --- /dev/null
 +++ arch/arm64/bhv/Makefile
 @@ -0,0 +1,14 @@
@@ -51,7 +51,7 @@ index 000000000000..e66e83fdb5eb
 +obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
 diff --git arch/arm64/bhv/init.c arch/arm64/bhv/init.c
 new file mode 100644
-index 000000000000..70a504119bab
+index 000000000..70a504119
 --- /dev/null
 +++ arch/arm64/bhv/init.c
 @@ -0,0 +1,14 @@
@@ -71,7 +71,7 @@ index 000000000000..70a504119bab
 +}
 diff --git arch/arm64/bhv/integrity.c arch/arm64/bhv/integrity.c
 new file mode 100644
-index 000000000000..454a5689442c
+index 000000000..454a56894
 --- /dev/null
 +++ arch/arm64/bhv/integrity.c
 @@ -0,0 +1,68 @@
@@ -145,7 +145,7 @@ index 000000000000..454a5689442c
 +}
 diff --git arch/arm64/bhv/patch_alternative.c arch/arm64/bhv/patch_alternative.c
 new file mode 100644
-index 000000000000..a16d97cd2704
+index 000000000..a16d97cd2
 --- /dev/null
 +++ arch/arm64/bhv/patch_alternative.c
 @@ -0,0 +1,376 @@
@@ -527,7 +527,7 @@ index 000000000000..a16d97cd2704
 +}
 diff --git arch/arm64/bhv/patch_jump_label.c arch/arm64/bhv/patch_jump_label.c
 new file mode 100644
-index 000000000000..610215168f50
+index 000000000..610215168
 --- /dev/null
 +++ arch/arm64/bhv/patch_jump_label.c
 @@ -0,0 +1,79 @@
@@ -612,7 +612,7 @@ index 000000000000..610215168f50
 +}
 diff --git arch/arm64/bhv/start.c arch/arm64/bhv/start.c
 new file mode 100644
-index 000000000000..605d0ae18110
+index 000000000..605d0ae18
 --- /dev/null
 +++ arch/arm64/bhv/start.c
 @@ -0,0 +1,18 @@
@@ -635,7 +635,7 @@ index 000000000000..605d0ae18110
 +	return bhv_start_integrity_arch();
 +}
 diff --git arch/arm64/include/asm/alternative.h arch/arm64/include/asm/alternative.h
-index 3cb3c4ab3ea5..632546cb6526 100644
+index 3cb3c4ab3..632546cb6 100644
 --- arch/arm64/include/asm/alternative.h
 +++ arch/arm64/include/asm/alternative.h
 @@ -14,6 +14,8 @@
@@ -664,7 +664,7 @@ index 3cb3c4ab3ea5..632546cb6526 100644
  void __init apply_alternatives_all(void);
 diff --git arch/arm64/include/asm/bhv/hypercall.h arch/arm64/include/asm/bhv/hypercall.h
 new file mode 100644
-index 000000000000..16f767181c09
+index 000000000..16f767181
 --- /dev/null
 +++ arch/arm64/include/asm/bhv/hypercall.h
 @@ -0,0 +1,30 @@
@@ -700,7 +700,7 @@ index 000000000000..16f767181c09
 +#endif /* __ASM_BHV_HYPERCALL_H__ */
 diff --git arch/arm64/include/asm/bhv/patch.h arch/arm64/include/asm/bhv/patch.h
 new file mode 100644
-index 000000000000..0a0a0dedd484
+index 000000000..0a0a0dedd
 --- /dev/null
 +++ arch/arm64/include/asm/bhv/patch.h
 @@ -0,0 +1,43 @@
@@ -748,7 +748,7 @@ index 000000000000..0a0a0dedd484
 +
 +#endif /* __ASM_BHV_PATCH_H__ */
 diff --git arch/arm64/include/asm/kvm_mmu.h arch/arm64/include/asm/kvm_mmu.h
-index 331394306cce..0cdb121c095d 100644
+index 331394306..0cdb121c0 100644
 --- arch/arm64/include/asm/kvm_mmu.h
 +++ arch/arm64/include/asm/kvm_mmu.h
 @@ -80,8 +80,17 @@ alternative_cb_end
@@ -770,7 +770,7 @@ index 331394306cce..0cdb121c095d 100644
  
  static __always_inline unsigned long __kern_hyp_va(unsigned long v)
 diff --git arch/arm64/kernel/alternative.c arch/arm64/kernel/alternative.c
-index 73039949b5ce..12cdee47c9da 100644
+index 73039949b..12cdee47c 100644
 --- arch/arm64/kernel/alternative.c
 +++ arch/arm64/kernel/alternative.c
 @@ -17,6 +17,9 @@
@@ -851,7 +851,7 @@ index 73039949b5ce..12cdee47c9da 100644
  }
  #endif
 diff --git arch/arm64/kernel/jump_label.c arch/arm64/kernel/jump_label.c
-index 9a8a0ae1e75f..c95fe7342c61 100644
+index 9a8a0ae1e..c95fe7342 100644
 --- arch/arm64/kernel/jump_label.c
 +++ arch/arm64/kernel/jump_label.c
 @@ -9,10 +9,14 @@
@@ -885,7 +885,7 @@ index 9a8a0ae1e75f..c95fe7342c61 100644
  }
  
 diff --git arch/arm64/kernel/proton-pack.c arch/arm64/kernel/proton-pack.c
-index f6e4e3737405..8b54537ca941 100644
+index f6e4e3737..8b54537ca 100644
 --- arch/arm64/kernel/proton-pack.c
 +++ arch/arm64/kernel/proton-pack.c
 @@ -27,6 +27,13 @@
@@ -993,7 +993,7 @@ index f6e4e3737405..8b54537ca941 100644
  
  static enum mitigation_state spectre_v4_enable_fw_mitigation(void)
 diff --git arch/arm64/kernel/setup.c arch/arm64/kernel/setup.c
-index eb4b24652c10..849c9741fd9e 100644
+index eb4b24652..849c9741f 100644
 --- arch/arm64/kernel/setup.c
 +++ arch/arm64/kernel/setup.c
 @@ -51,6 +51,8 @@
@@ -1014,7 +1014,7 @@ index eb4b24652c10..849c9741fd9e 100644
  
  	if (!efi_enabled(EFI_BOOT) && ((u64)_text % MIN_KIMG_ALIGN) != 0)
 diff --git arch/arm64/kernel/vmlinux.lds.S arch/arm64/kernel/vmlinux.lds.S
-index 30c102978942..b7a1d8115090 100644
+index 30c102978..b7a1d8115 100644
 --- arch/arm64/kernel/vmlinux.lds.S
 +++ arch/arm64/kernel/vmlinux.lds.S
 @@ -135,6 +135,7 @@ SECTIONS
@@ -1044,7 +1044,7 @@ index 30c102978942..b7a1d8115090 100644
  	__pecoff_data_rawsize = ABSOLUTE(. - __initdata_begin);
  	_edata = .;
 diff --git arch/arm64/kvm/va_layout.c arch/arm64/kvm/va_layout.c
-index e0404bcab019..f7c85c7f4291 100644
+index e0404bcab..f7c85c7f4 100644
 --- arch/arm64/kvm/va_layout.c
 +++ arch/arm64/kvm/va_layout.c
 @@ -12,6 +12,11 @@
@@ -1215,7 +1215,7 @@ index e0404bcab019..f7c85c7f4291 100644
 +#endif /* CONFIG_BHV_VAS */
  }
 diff --git arch/arm64/mm/init.c arch/arm64/mm/init.c
-index c0a7f0d90b39..ced3f3d0bc93 100644
+index c0a7f0d90..ced3f3d0b 100644
 --- arch/arm64/mm/init.c
 +++ arch/arm64/mm/init.c
 @@ -43,6 +43,9 @@
@@ -1237,7 +1237,7 @@ index c0a7f0d90b39..ced3f3d0bc93 100644
  			   lm_alias(__init_end),
  			   POISON_FREE_INITMEM, "unused kernel");
 diff --git arch/x86/Kbuild arch/x86/Kbuild
-index 30dec019756b..3235bbc86ff8 100644
+index 30dec0197..3235bbc86 100644
 --- arch/x86/Kbuild
 +++ arch/x86/Kbuild
 @@ -13,6 +13,9 @@ obj-$(CONFIG_PVH) += platform/pvh/
@@ -1251,7 +1251,7 @@ index 30dec019756b..3235bbc86ff8 100644
  obj-y += kernel/
  obj-y += mm/
 diff --git arch/x86/Kconfig arch/x86/Kconfig
-index c3d9f56c9018..325e58f61ae8 100644
+index c3d9f56c9..325e58f61 100644
 --- arch/x86/Kconfig
 +++ arch/x86/Kconfig
 @@ -864,6 +864,16 @@ config ACRN_GUEST
@@ -1273,7 +1273,7 @@ index c3d9f56c9018..325e58f61ae8 100644
  source "arch/x86/Kconfig.cpu"
 diff --git arch/x86/bhv/Makefile arch/x86/bhv/Makefile
 new file mode 100644
-index 000000000000..e66e83fdb5eb
+index 000000000..e66e83fdb
 --- /dev/null
 +++ arch/x86/bhv/Makefile
 @@ -0,0 +1,14 @@
@@ -1293,7 +1293,7 @@ index 000000000000..e66e83fdb5eb
 +obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
 diff --git arch/x86/bhv/init.c arch/x86/bhv/init.c
 new file mode 100644
-index 000000000000..1833c1b75e6d
+index 000000000..1833c1b75
 --- /dev/null
 +++ arch/x86/bhv/init.c
 @@ -0,0 +1,102 @@
@@ -1401,7 +1401,7 @@ index 000000000000..1833c1b75e6d
 +}
 diff --git arch/x86/bhv/integrity.c arch/x86/bhv/integrity.c
 new file mode 100644
-index 000000000000..c3a87ea2a774
+index 000000000..c3a87ea2a
 --- /dev/null
 +++ arch/x86/bhv/integrity.c
 @@ -0,0 +1,297 @@
@@ -1704,7 +1704,7 @@ index 000000000000..c3a87ea2a774
 +}
 diff --git arch/x86/bhv/patch_alternative.c arch/x86/bhv/patch_alternative.c
 new file mode 100644
-index 000000000000..dec45eaf6533
+index 000000000..dec45eaf6
 --- /dev/null
 +++ arch/x86/bhv/patch_alternative.c
 @@ -0,0 +1,381 @@
@@ -2092,7 +2092,7 @@ index 000000000000..dec45eaf6533
 \ No newline at end of file
 diff --git arch/x86/bhv/patch_jump_label.c arch/x86/bhv/patch_jump_label.c
 new file mode 100644
-index 000000000000..47cc0b8809b9
+index 000000000..47cc0b880
 --- /dev/null
 +++ arch/x86/bhv/patch_jump_label.c
 @@ -0,0 +1,45 @@
@@ -2143,7 +2143,7 @@ index 000000000000..47cc0b8809b9
 +}
 diff --git arch/x86/bhv/start.c arch/x86/bhv/start.c
 new file mode 100644
-index 000000000000..d038b5a2d97e
+index 000000000..d038b5a2d
 --- /dev/null
 +++ arch/x86/bhv/start.c
 @@ -0,0 +1,44 @@
@@ -2193,7 +2193,7 @@ index 000000000000..d038b5a2d97e
 +}
 diff --git arch/x86/include/asm/bhv/hypercall.h arch/x86/include/asm/bhv/hypercall.h
 new file mode 100644
-index 000000000000..5140906c8697
+index 000000000..5140906c8
 --- /dev/null
 +++ arch/x86/include/asm/bhv/hypercall.h
 @@ -0,0 +1,26 @@
@@ -2225,7 +2225,7 @@ index 000000000000..5140906c8697
 +#endif /* __ASM_BHV_HYPERCALL_H__ */
 diff --git arch/x86/include/asm/bhv/integrity.h arch/x86/include/asm/bhv/integrity.h
 new file mode 100644
-index 000000000000..f1213d0a8c4c
+index 000000000..f1213d0a8
 --- /dev/null
 +++ arch/x86/include/asm/bhv/integrity.h
 @@ -0,0 +1,32 @@
@@ -2263,7 +2263,7 @@ index 000000000000..f1213d0a8c4c
 +#endif /* __ASM_BHV_INTEGRITY_H__ */
 diff --git arch/x86/include/asm/bhv/patch.h arch/x86/include/asm/bhv/patch.h
 new file mode 100644
-index 000000000000..4927cecdec62
+index 000000000..4927cecde
 --- /dev/null
 +++ arch/x86/include/asm/bhv/patch.h
 @@ -0,0 +1,59 @@
@@ -2328,7 +2328,7 @@ index 000000000000..4927cecdec62
 +#endif /* __ASM_BHV_PATCH_H__ */
 \ No newline at end of file
 diff --git arch/x86/include/asm/hypervisor.h arch/x86/include/asm/hypervisor.h
-index e41cbf2ec41d..591e48b05097 100644
+index e41cbf2ec..591e48b05 100644
 --- arch/x86/include/asm/hypervisor.h
 +++ arch/x86/include/asm/hypervisor.h
 @@ -30,6 +30,7 @@ enum x86_hypervisor_type {
@@ -2348,7 +2348,7 @@ index e41cbf2ec41d..591e48b05097 100644
  extern bool nopv;
  extern enum x86_hypervisor_type x86_hyper_type;
 diff --git arch/x86/kernel/alternative.c arch/x86/kernel/alternative.c
-index 2400ad62f330..af170c380fe4 100644
+index 2400ad62f..af170c380 100644
 --- arch/x86/kernel/alternative.c
 +++ arch/x86/kernel/alternative.c
 @@ -29,6 +29,9 @@
@@ -2448,7 +2448,7 @@ index 2400ad62f330..af170c380fe4 100644
  	}
  	mutex_unlock(&text_mutex);
 diff --git arch/x86/kernel/cpu/hypervisor.c arch/x86/kernel/cpu/hypervisor.c
-index 553bfbfc3a1b..20bfa373b05b 100644
+index 553bfbfc3..20bfa373b 100644
 --- arch/x86/kernel/cpu/hypervisor.c
 +++ arch/x86/kernel/cpu/hypervisor.c
 @@ -45,6 +45,9 @@ static const __initconst struct hypervisor_x86 * const hypervisors[] =
@@ -2462,7 +2462,7 @@ index 553bfbfc3a1b..20bfa373b05b 100644
  
  enum x86_hypervisor_type x86_hyper_type;
 diff --git arch/x86/kernel/idt.c arch/x86/kernel/idt.c
-index ee1a283f8e96..93615b1064fc 100644
+index ee1a283f8..93615b106 100644
 --- arch/x86/kernel/idt.c
 +++ arch/x86/kernel/idt.c
 @@ -10,6 +10,7 @@
@@ -2483,7 +2483,7 @@ index ee1a283f8e96..93615b1064fc 100644
  }
  
 diff --git arch/x86/kernel/jump_label.c arch/x86/kernel/jump_label.c
-index 5ba8477c2cb7..03ef91a49150 100644
+index 5ba8477c2..03ef91a49 100644
 --- arch/x86/kernel/jump_label.c
 +++ arch/x86/kernel/jump_label.c
 @@ -15,6 +15,9 @@
@@ -2567,7 +2567,7 @@ index 5ba8477c2cb7..03ef91a49150 100644
  static enum {
  	JL_STATE_START,
 diff --git arch/x86/kernel/module.c arch/x86/kernel/module.c
-index 5e9a34b5bd74..9b6a4cedd63e 100644
+index 5e9a34b5b..9b6a4cedd 100644
 --- arch/x86/kernel/module.c
 +++ arch/x86/kernel/module.c
 @@ -25,6 +25,9 @@
@@ -2623,7 +2623,7 @@ index 5e9a34b5bd74..9b6a4cedd63e 100644
  	}
  	if (locks && text) {
 diff --git arch/x86/kernel/vmlinux.lds.S arch/x86/kernel/vmlinux.lds.S
-index bf9e0adb5b7e..58c5485e47d4 100644
+index bf9e0adb5..58c5485e4 100644
 --- arch/x86/kernel/vmlinux.lds.S
 +++ arch/x86/kernel/vmlinux.lds.S
 @@ -137,6 +137,7 @@ SECTIONS
@@ -2653,7 +2653,7 @@ index bf9e0adb5b7e..58c5485e47d4 100644
  	. = ALIGN(PAGE_SIZE);
  	.bss : AT(ADDR(.bss) - LOAD_OFFSET) {
 diff --git arch/x86/mm/init.c arch/x86/mm/init.c
-index c7a47603537f..be0b8e625e66 100644
+index c7a476035..be0b8e625 100644
 --- arch/x86/mm/init.c
 +++ arch/x86/mm/init.c
 @@ -36,6 +36,9 @@
@@ -2676,7 +2676,7 @@ index c7a47603537f..be0b8e625e66 100644
  				&__init_begin, &__init_end);
  }
 diff --git include/asm-generic/sections.h include/asm-generic/sections.h
-index d16302d3eb59..5ce32b4ce2e0 100644
+index d16302d3e..5ce32b4ce 100644
 --- include/asm-generic/sections.h
 +++ include/asm-generic/sections.h
 @@ -58,6 +58,13 @@ extern char __noinstr_text_start[], __noinstr_text_end[];
@@ -2694,7 +2694,7 @@ index d16302d3eb59..5ce32b4ce2e0 100644
  #ifndef dereference_function_descriptor
  #define dereference_function_descriptor(p) ((void *)(p))
 diff --git include/asm-generic/vmlinux.lds.h include/asm-generic/vmlinux.lds.h
-index a774361f28d4..4b1e92cdc356 100644
+index a774361f2..4b1e92cdc 100644
 --- include/asm-generic/vmlinux.lds.h
 +++ include/asm-generic/vmlinux.lds.h
 @@ -656,6 +656,17 @@
@@ -2717,7 +2717,7 @@ index a774361f28d4..4b1e92cdc356 100644
  
 diff --git include/bhv/acl.h include/bhv/acl.h
 new file mode 100644
-index 000000000000..9f507a87a668
+index 000000000..9f507a87a
 --- /dev/null
 +++ include/bhv/acl.h
 @@ -0,0 +1,51 @@
@@ -2775,7 +2775,7 @@ index 000000000000..9f507a87a668
 \ No newline at end of file
 diff --git include/bhv/bhv.h include/bhv/bhv.h
 new file mode 100644
-index 000000000000..b1eecdd1cf5c
+index 000000000..b1eecdd1c
 --- /dev/null
 +++ include/bhv/bhv.h
 @@ -0,0 +1,43 @@
@@ -2824,7 +2824,7 @@ index 000000000000..b1eecdd1cf5c
 +#endif /* __BHV_BHV_H__ */
 diff --git include/bhv/bhv_print.h include/bhv/bhv_print.h
 new file mode 100644
-index 000000000000..35d267d47d64
+index 000000000..35d267d47
 --- /dev/null
 +++ include/bhv/bhv_print.h
 @@ -0,0 +1,26 @@
@@ -2857,7 +2857,7 @@ index 000000000000..35d267d47d64
 \ No newline at end of file
 diff --git include/bhv/creds.h include/bhv/creds.h
 new file mode 100644
-index 000000000000..81a73366fb15
+index 000000000..81a73366f
 --- /dev/null
 +++ include/bhv/creds.h
 @@ -0,0 +1,79 @@
@@ -2942,7 +2942,7 @@ index 000000000000..81a73366fb15
 +#endif /* __BHV_CREDS_H__ */
 diff --git include/bhv/file_protection.h include/bhv/file_protection.h
 new file mode 100644
-index 000000000000..967b39f6629a
+index 000000000..967b39f66
 --- /dev/null
 +++ include/bhv/file_protection.h
 @@ -0,0 +1,57 @@
@@ -3006,7 +3006,7 @@ index 000000000000..967b39f6629a
 \ No newline at end of file
 diff --git include/bhv/guestlog.h include/bhv/guestlog.h
 new file mode 100644
-index 000000000000..f7ab25e0c726
+index 000000000..f7ab25e0c
 --- /dev/null
 +++ include/bhv/guestlog.h
 @@ -0,0 +1,86 @@
@@ -3099,7 +3099,7 @@ index 000000000000..f7ab25e0c726
 \ No newline at end of file
 diff --git include/bhv/init.h include/bhv/init.h
 new file mode 100644
-index 000000000000..0b9a72e48ea9
+index 000000000..0b9a72e48
 --- /dev/null
 +++ include/bhv/init.h
 @@ -0,0 +1,21 @@
@@ -3126,7 +3126,7 @@ index 000000000000..0b9a72e48ea9
 +#endif /* __BHV_INIT_H__ */
 diff --git include/bhv/integrity.h include/bhv/integrity.h
 new file mode 100644
-index 000000000000..71a1881ea194
+index 000000000..71a1881ea
 --- /dev/null
 +++ include/bhv/integrity.h
 @@ -0,0 +1,194 @@
@@ -3326,7 +3326,7 @@ index 000000000000..71a1881ea194
 +#endif /* __BHV_INTEGRITY_H__ */
 diff --git include/bhv/interface/acl.h include/bhv/interface/acl.h
 new file mode 100644
-index 000000000000..c6822e3027c2
+index 000000000..c6822e302
 --- /dev/null
 +++ include/bhv/interface/acl.h
 @@ -0,0 +1,33 @@
@@ -3365,7 +3365,7 @@ index 000000000000..c6822e3027c2
 +#endif /* __BHV_INTERFACE_ACL_H__ */
 diff --git include/bhv/interface/common.h include/bhv/interface/common.h
 new file mode 100644
-index 000000000000..219d971e3e78
+index 000000000..219d971e3
 --- /dev/null
 +++ include/bhv/interface/common.h
 @@ -0,0 +1,40 @@
@@ -3411,7 +3411,7 @@ index 000000000000..219d971e3e78
 +#endif /* __BHV_INTERFACE_COMMON_H__ */
 diff --git include/bhv/interface/creds.h include/bhv/interface/creds.h
 new file mode 100644
-index 000000000000..3bdee7376b06
+index 000000000..3bdee7376
 --- /dev/null
 +++ include/bhv/interface/creds.h
 @@ -0,0 +1,90 @@
@@ -3507,7 +3507,7 @@ index 000000000000..3bdee7376b06
 +#endif /* __BHV_INTERFACE_CREDS_H__ */
 diff --git include/bhv/interface/file_protection.h include/bhv/interface/file_protection.h
 new file mode 100644
-index 000000000000..095a9dbc36ac
+index 000000000..095a9dbc3
 --- /dev/null
 +++ include/bhv/interface/file_protection.h
 @@ -0,0 +1,29 @@
@@ -3542,7 +3542,7 @@ index 000000000000..095a9dbc36ac
 +#endif /* __BHV_INTERFACE_FILE_PROTECTION_H__ */
 diff --git include/bhv/interface/guestlog.h include/bhv/interface/guestlog.h
 new file mode 100644
-index 000000000000..a2a894f78480
+index 000000000..a2a894f78
 --- /dev/null
 +++ include/bhv/interface/guestlog.h
 @@ -0,0 +1,81 @@
@@ -3630,7 +3630,7 @@ index 000000000000..a2a894f78480
 \ No newline at end of file
 diff --git include/bhv/interface/hypercall.h include/bhv/interface/hypercall.h
 new file mode 100644
-index 000000000000..d9c92066f040
+index 000000000..d9c92066f
 --- /dev/null
 +++ include/bhv/interface/hypercall.h
 @@ -0,0 +1,39 @@
@@ -3675,7 +3675,7 @@ index 000000000000..d9c92066f040
 +#endif /* _ASM_INTERFACE_BHV_HYPERCALL_H */
 diff --git include/bhv/interface/init.h include/bhv/interface/init.h
 new file mode 100644
-index 000000000000..caad23f68bc3
+index 000000000..caad23f68
 --- /dev/null
 +++ include/bhv/interface/init.h
 @@ -0,0 +1,28 @@
@@ -3709,7 +3709,7 @@ index 000000000000..caad23f68bc3
 +#endif /* __BHV_INTERFACE_INIT_H__ */
 diff --git include/bhv/interface/integrity.h include/bhv/interface/integrity.h
 new file mode 100644
-index 000000000000..d7ddf79d1790
+index 000000000..d7ddf79d1
 --- /dev/null
 +++ include/bhv/interface/integrity.h
 @@ -0,0 +1,93 @@
@@ -3808,7 +3808,7 @@ index 000000000000..d7ddf79d1790
 +#endif /* __BHV_INTERFACE_INTEGRITY_H__ */
 diff --git include/bhv/interface/patch.h include/bhv/interface/patch.h
 new file mode 100644
-index 000000000000..9c5db60d5ecd
+index 000000000..9c5db60d5
 --- /dev/null
 +++ include/bhv/interface/patch.h
 @@ -0,0 +1,37 @@
@@ -3851,7 +3851,7 @@ index 000000000000..9c5db60d5ecd
 +#endif /* __BHV_INTERFACE_PATCH_H__ */
 diff --git include/bhv/interface/vault.h include/bhv/interface/vault.h
 new file mode 100644
-index 000000000000..075752c19838
+index 000000000..075752c19
 --- /dev/null
 +++ include/bhv/interface/vault.h
 @@ -0,0 +1,14 @@
@@ -3871,7 +3871,7 @@ index 000000000000..075752c19838
 +#endif /* __BHV_INTERFACE_VAULT_H__ */
 diff --git include/bhv/module.h include/bhv/module.h
 new file mode 100644
-index 000000000000..6a099f891013
+index 000000000..6a099f891
 --- /dev/null
 +++ include/bhv/module.h
 @@ -0,0 +1,47 @@
@@ -3924,7 +3924,7 @@ index 000000000000..6a099f891013
 +#endif /* __BHV_MODULE_H__ */
 diff --git include/bhv/patch.h include/bhv/patch.h
 new file mode 100644
-index 000000000000..4e0db069c9e0
+index 000000000..4e0db069c
 --- /dev/null
 +++ include/bhv/patch.h
 @@ -0,0 +1,77 @@
@@ -4007,7 +4007,7 @@ index 000000000000..4e0db069c9e0
 +#endif /* __BHV_PATCH_H__ */
 diff --git include/bhv/start.h include/bhv/start.h
 new file mode 100644
-index 000000000000..67c90a54cd3e
+index 000000000..67c90a54c
 --- /dev/null
 +++ include/bhv/start.h
 @@ -0,0 +1,27 @@
@@ -4041,7 +4041,7 @@ index 000000000000..67c90a54cd3e
 \ No newline at end of file
 diff --git include/bhv/vault.h include/bhv/vault.h
 new file mode 100644
-index 000000000000..902647976c5b
+index 000000000..902647976
 --- /dev/null
 +++ include/bhv/vault.h
 @@ -0,0 +1,43 @@
@@ -4089,7 +4089,7 @@ index 000000000000..902647976c5b
 +
 +#endif /* __BHV_VAULT_H__ */
 diff --git include/linux/filter.h include/linux/filter.h
-index 822b701c803d..c41d12d0b782 100644
+index 822b701c8..c41d12d0b 100644
 --- include/linux/filter.h
 +++ include/linux/filter.h
 @@ -29,6 +29,8 @@
@@ -4128,7 +4128,7 @@ index 822b701c803d..c41d12d0b782 100644
  }
  
 diff --git init/main.c init/main.c
-index dd26a42e80a8..1118ef396f66 100644
+index dd26a42e8..1118ef396 100644
 --- init/main.c
 +++ init/main.c
 @@ -110,6 +110,9 @@
@@ -4151,7 +4151,7 @@ index dd26a42e80a8..1118ef396f66 100644
  
  void __init __weak arch_call_rest_init(void)
 diff --git kernel/Makefile kernel/Makefile
-index e7905bdf6e97..4c4454e8806a 100644
+index e7905bdf6..4c4454e88 100644
 --- kernel/Makefile
 +++ kernel/Makefile
 @@ -47,6 +47,7 @@ obj-y += rcu/
@@ -4164,7 +4164,7 @@ index e7905bdf6e97..4c4454e8806a 100644
  obj-$(CONFIG_FREEZER) += freezer.o
 diff --git kernel/bhv/Kconfig kernel/bhv/Kconfig
 new file mode 100644
-index 000000000000..efb414dc06a9
+index 000000000..efb414dc0
 --- /dev/null
 +++ kernel/bhv/Kconfig
 @@ -0,0 +1,16 @@
@@ -4186,7 +4186,7 @@ index 000000000000..efb414dc06a9
 +	  Say Y if you want to include DEBUG output when using BHV VAS.
 diff --git kernel/bhv/Makefile kernel/bhv/Makefile
 new file mode 100644
-index 000000000000..1b9e3679c14f
+index 000000000..1b9e3679c
 --- /dev/null
 +++ kernel/bhv/Makefile
 @@ -0,0 +1,20 @@
@@ -4212,7 +4212,7 @@ index 000000000000..1b9e3679c14f
 +obj-$(CONFIG_BHV_VAS)		+= file_protection.o
 diff --git kernel/bhv/acl.c kernel/bhv/acl.c
 new file mode 100644
-index 000000000000..b319213d5602
+index 000000000..b319213d5
 --- /dev/null
 +++ kernel/bhv/acl.c
 @@ -0,0 +1,298 @@
@@ -4517,7 +4517,7 @@ index 000000000000..b319213d5602
 \ No newline at end of file
 diff --git kernel/bhv/bhv.c kernel/bhv/bhv.c
 new file mode 100644
-index 000000000000..e88d27542e18
+index 000000000..e88d27542
 --- /dev/null
 +++ kernel/bhv/bhv.c
 @@ -0,0 +1,26 @@
@@ -4549,7 +4549,7 @@ index 000000000000..e88d27542e18
 +}
 diff --git kernel/bhv/creds.c kernel/bhv/creds.c
 new file mode 100644
-index 000000000000..fae31bddbe65
+index 000000000..fae31bddb
 --- /dev/null
 +++ kernel/bhv/creds.c
 @@ -0,0 +1,407 @@
@@ -4962,7 +4962,7 @@ index 000000000000..fae31bddbe65
 +
 diff --git kernel/bhv/file_protection.c kernel/bhv/file_protection.c
 new file mode 100644
-index 000000000000..0b0943222ad9
+index 000000000..0b0943222
 --- /dev/null
 +++ kernel/bhv/file_protection.c
 @@ -0,0 +1,89 @@
@@ -5058,7 +5058,7 @@ index 000000000000..0b0943222ad9
 \ No newline at end of file
 diff --git kernel/bhv/guestlog.c kernel/bhv/guestlog.c
 new file mode 100644
-index 000000000000..6b8c49e12be6
+index 000000000..6b8c49e12
 --- /dev/null
 +++ kernel/bhv/guestlog.c
 @@ -0,0 +1,323 @@
@@ -5388,7 +5388,7 @@ index 000000000000..6b8c49e12be6
 \ No newline at end of file
 diff --git kernel/bhv/init.c kernel/bhv/init.c
 new file mode 100644
-index 000000000000..09824583e08f
+index 000000000..09824583e
 --- /dev/null
 +++ kernel/bhv/init.c
 @@ -0,0 +1,89 @@
@@ -5483,7 +5483,7 @@ index 000000000000..09824583e08f
 +}
 diff --git kernel/bhv/integrity.c kernel/bhv/integrity.c
 new file mode 100644
-index 000000000000..25ac14dfd0c1
+index 000000000..25ac14dfd
 --- /dev/null
 +++ kernel/bhv/integrity.c
 @@ -0,0 +1,131 @@
@@ -5620,7 +5620,7 @@ index 000000000000..25ac14dfd0c1
 +}
 diff --git kernel/bhv/module.c kernel/bhv/module.c
 new file mode 100644
-index 000000000000..0288d3fb4cb5
+index 000000000..0288d3fb4
 --- /dev/null
 +++ kernel/bhv/module.c
 @@ -0,0 +1,416 @@
@@ -6042,7 +6042,7 @@ index 000000000000..0288d3fb4cb5
 +}
 diff --git kernel/bhv/patch_alternative.c kernel/bhv/patch_alternative.c
 new file mode 100644
-index 000000000000..165d0739b5d6
+index 000000000..165d0739b
 --- /dev/null
 +++ kernel/bhv/patch_alternative.c
 @@ -0,0 +1,181 @@
@@ -6230,7 +6230,7 @@ index 000000000000..165d0739b5d6
 \ No newline at end of file
 diff --git kernel/bhv/patch_jump_label.c kernel/bhv/patch_jump_label.c
 new file mode 100644
-index 000000000000..5d90a14e7a73
+index 000000000..5d90a14e7
 --- /dev/null
 +++ kernel/bhv/patch_jump_label.c
 @@ -0,0 +1,177 @@
@@ -6413,7 +6413,7 @@ index 000000000000..5d90a14e7a73
 +}
 diff --git kernel/bhv/start.c kernel/bhv/start.c
 new file mode 100644
-index 000000000000..9b52e81f8d83
+index 000000000..9b52e81f8
 --- /dev/null
 +++ kernel/bhv/start.c
 @@ -0,0 +1,91 @@
@@ -6509,7 +6509,7 @@ index 000000000000..9b52e81f8d83
 +		pr_err("BHV: start hypercall failed: %d", rc);
 +}
 diff --git kernel/bpf/bpf_struct_ops.c kernel/bpf/bpf_struct_ops.c
-index ac283f9b2332..4afe69e3c07c 100644
+index ac283f9b2..4afe69e3c 100644
 --- kernel/bpf/bpf_struct_ops.c
 +++ kernel/bpf/bpf_struct_ops.c
 @@ -452,6 +452,7 @@ static int bpf_struct_ops_map_update_elem(struct bpf_map *map, void *key,
@@ -6529,7 +6529,7 @@ index ac283f9b2332..4afe69e3c07c 100644
  
  reset_unlock:
 diff --git kernel/bpf/core.c kernel/bpf/core.c
-index 72e4bf0ee546..17d266c4f654 100644
+index 72e4bf0ee..17d266c4f 100644
 --- kernel/bpf/core.c
 +++ kernel/bpf/core.c
 @@ -899,6 +899,12 @@ void bpf_jit_binary_free(struct bpf_binary_header *hdr)
@@ -6546,7 +6546,7 @@ index 72e4bf0ee546..17d266c4f654 100644
  	bpf_jit_uncharge_modmem(pages);
  }
 diff --git kernel/bpf/trampoline.c kernel/bpf/trampoline.c
-index 986dabc3d11f..a8ddc45aa8c9 100644
+index 986dabc3d..a8ddc45aa 100644
 --- kernel/bpf/trampoline.c
 +++ kernel/bpf/trampoline.c
 @@ -38,6 +38,11 @@ void *bpf_jit_alloc_exec_page(void)
@@ -6578,7 +6578,7 @@ index 986dabc3d11f..a8ddc45aa8c9 100644
  out_uncharge:
  	bpf_jit_uncharge_modmem(1);
 diff --git kernel/cred.c kernel/cred.c
-index 421b1149c651..b3d4fd6c0c8f 100644
+index 421b1149c..b3d4fd6c0 100644
 --- kernel/cred.c
 +++ kernel/cred.c
 @@ -17,6 +17,8 @@
@@ -6618,7 +6618,7 @@ index 421b1149c651..b3d4fd6c0c8f 100644
  		old = get_task_cred(daemon);
  	else
 diff --git kernel/fork.c kernel/fork.c
-index 3f96400a0ac6..ba2b7434a5d4 100644
+index 3f96400a0..ba2b7434a 100644
 --- kernel/fork.c
 +++ kernel/fork.c
 @@ -97,6 +97,8 @@
@@ -6653,7 +6653,7 @@ index 3f96400a0ac6..ba2b7434a5d4 100644
  	security_task_free(p);
  bad_fork_cleanup_audit:
 diff --git kernel/jump_label.c kernel/jump_label.c
-index 4ae693ce71a4..37ae60aa8986 100644
+index 4ae693ce7..37ae60aa8 100644
 --- kernel/jump_label.c
 +++ kernel/jump_label.c
 @@ -19,6 +19,8 @@
@@ -6684,7 +6684,7 @@ index 4ae693ce71a4..37ae60aa8986 100644
  		if (jump_entry_key(iter) == key)
  			continue;
 diff --git kernel/module.c kernel/module.c
-index 185b2655bc20..e5c3bd1b5454 100644
+index 185b2655b..e5c3bd1b5 100644
 --- kernel/module.c
 +++ kernel/module.c
 @@ -60,6 +60,8 @@
@@ -6731,7 +6731,7 @@ index 185b2655bc20..e5c3bd1b5454 100644
  	if (err)
  		goto bug_cleanup;
 diff --git security/Kconfig security/Kconfig
-index 7561f6f99f1d..dc3b6ada1845 100644
+index 7561f6f99..dc3b6ada1 100644
 --- security/Kconfig
 +++ security/Kconfig
 @@ -235,6 +235,7 @@ source "security/smack/Kconfig"
@@ -6760,7 +6760,7 @@ index 7561f6f99f1d..dc3b6ada1845 100644
  	  A comma-separated list of LSMs, in initialization order.
  	  Any LSMs left off this list will be ignored. This can be
 diff --git security/Makefile security/Makefile
-index 3baf435de541..9958117a6395 100644
+index 3baf435de..9958117a6 100644
 --- security/Makefile
 +++ security/Makefile
 @@ -10,6 +10,7 @@ subdir-$(CONFIG_SECURITY_TOMOYO)        += tomoyo
@@ -6781,7 +6781,7 @@ index 3baf435de541..9958117a6395 100644
  obj-$(CONFIG_CGROUPS)			+= device_cgroup.o
 diff --git security/bhv/Kconfig security/bhv/Kconfig
 new file mode 100644
-index 000000000000..309c33608091
+index 000000000..309c33608
 --- /dev/null
 +++ security/bhv/Kconfig
 @@ -0,0 +1,9 @@
@@ -6796,7 +6796,7 @@ index 000000000000..309c33608091
 +	  additional protections such as the process and the driver ACL.
 diff --git security/bhv/Makefile security/bhv/Makefile
 new file mode 100644
-index 000000000000..f921bdf385ea
+index 000000000..f921bdf38
 --- /dev/null
 +++ security/bhv/Makefile
 @@ -0,0 +1,2 @@
@@ -6804,7 +6804,7 @@ index 000000000000..f921bdf385ea
 +obj-$(CONFIG_SECURITY_BHV) += bhv.o
 diff --git security/bhv/bhv.c security/bhv/bhv.c
 new file mode 100644
-index 000000000000..26588e495da9
+index 000000000..26588e495
 --- /dev/null
 +++ security/bhv/bhv.c
 @@ -0,0 +1,247 @@
