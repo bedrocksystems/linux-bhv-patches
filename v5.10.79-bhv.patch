@@ -2348,7 +2348,7 @@ index e41cbf2ec..591e48b05 100644
  extern bool nopv;
  extern enum x86_hypervisor_type x86_hyper_type;
 diff --git arch/x86/kernel/alternative.c arch/x86/kernel/alternative.c
-index 2400ad62f..af170c380 100644
+index 2400ad62f..8f9c9be44 100644
 --- arch/x86/kernel/alternative.c
 +++ arch/x86/kernel/alternative.c
 @@ -29,6 +29,9 @@
@@ -2395,21 +2395,23 @@ index 2400ad62f..af170c380 100644
  	mutex_lock(&text_mutex);
  	if (!uniproc_patched)
  		goto unlock;
-@@ -522,7 +536,23 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
+@@ -522,7 +536,25 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
  
  	list_add_tail(&smp->next, &smp_alt_modules);
  smp_unlock:
 +#ifdef CONFIG_BHV_VAS
 +	if (bhv_integrity_is_enabled()) {
 +		// Add module with locks as this will be used for SMP only
-+		bhv_alternatives_add_module_arch(locks, locks_end, locks,
-+						 locks_end, text, text_end);
++		if (num_possible_cpus() > 1) {
++			bhv_alternatives_add_module_arch(locks, locks_end, locks,
++							locks_end, text, text_end);
++		}
 +		// Apply
 +		smp_lock = false;
 +		p.locks_begin = locks;
 +		p.locks_end = locks_end;
 +		bhv_alternatives_apply_custom_filter(
-+			&p, &smp, bhv_alternatives_find_by_lock);
++			&p, &smp_lock, bhv_alternatives_find_by_lock);
 +	} else {
 +		alternatives_smp_unlock(locks, locks_end, text, text_end);
 +	}
@@ -2419,7 +2421,7 @@ index 2400ad62f..af170c380 100644
  unlock:
  	mutex_unlock(&text_mutex);
  }
-@@ -556,9 +586,26 @@ void alternatives_enable_smp(void)
+@@ -556,9 +588,26 @@ void alternatives_enable_smp(void)
  		BUG_ON(num_online_cpus() != 1);
  		clear_cpu_cap(&boot_cpu_data, X86_FEATURE_UP);
  		clear_cpu_cap(&cpu_data(0), X86_FEATURE_UP);
