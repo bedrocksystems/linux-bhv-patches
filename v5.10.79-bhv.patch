@@ -6595,7 +6595,7 @@ index 000000000..5d90a14e7
 +}
 diff --git kernel/bhv/start.c kernel/bhv/start.c
 new file mode 100644
-index 000000000..bbbe4fc0d
+index 000000000..fc9ae957b
 --- /dev/null
 +++ kernel/bhv/start.c
 @@ -0,0 +1,193 @@
@@ -6745,7 +6745,7 @@ index 000000000..bbbe4fc0d
 +			return;
 +		}
 +#else /* CONFIG_SECURITY_SELINUX */
-+		bhv_fail("guest policy available without target LSM")
++		bhv_fail("guest policy available without target LSM");
 +#endif /* CONFIG_SECURITY_SELINUX */
 +	}
 +
