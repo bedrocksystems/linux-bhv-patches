@@ -5183,7 +5183,7 @@ index 000000000..0b0943222
 \ No newline at end of file
 diff --git kernel/bhv/guestconn.c kernel/bhv/guestconn.c
 new file mode 100644
-index 000000000..152ba28b1
+index 000000000..766d426d6
 --- /dev/null
 +++ kernel/bhv/guestconn.c
 @@ -0,0 +1,235 @@
@@ -5271,7 +5271,8 @@ index 000000000..152ba28b1
 +		item->to_send =
 +			bhv_send(&item->header, item->header.sz, item->to_send);
 +
-+		if (item->to_send == 0) {
++		if (item->to_send == 0 ||
++		    unlikely(atomic_read(&reboot_in_progress))) {
 +			spin_lock(&bhv_guestconn_msg_lock);
 +			list_del(&(item->list));
 +			spin_unlock(&bhv_guestconn_msg_lock);
@@ -5330,15 +5331,14 @@ index 000000000..152ba28b1
 +	if (atomic_read(&workqueue_ready)) {
 +		atomic_inc(&reboot_in_progress);
 +
-+		while (true) {
-+			spin_lock(&bhv_guestconn_msg_lock);
-+			if (list_empty(&bhv_guestconn_msg_list)) {
-+				spin_unlock(&bhv_guestconn_msg_lock);
-+				break;
-+			}
-+			spin_unlock(&bhv_guestconn_msg_lock);
-+		}
++		// Cancel pending work.
++		cancel_delayed_work_sync(
++			&bhv_guestconn_delayed_work_struct);
 +
++		// Drain the workqueue
++		drain_workqueue(bhv_guestconn_workqueue);
++
++		// We assume all messages are gone now and we shut down the socket
 +		sock_release(vsock);
 +		vsock = NULL;
 +	}
