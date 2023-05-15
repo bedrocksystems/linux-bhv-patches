@@ -1,18 +1,18 @@
 diff --git arch/arm64/Kbuild arch/arm64/Kbuild
-index d6465823b..f1ea15a79 100644
+index ea7ab4ca8..81f6d39e0 100644
 --- arch/arm64/Kbuild
 +++ arch/arm64/Kbuild
-@@ -3,4 +3,5 @@ obj-y			+= kernel/ mm/
- obj-$(CONFIG_NET)	+= net/
+@@ -3,4 +3,5 @@ obj-y			+= kernel/ mm/ net/
  obj-$(CONFIG_KVM)	+= kvm/
  obj-$(CONFIG_XEN)	+= xen/
+ obj-$(subst m,y,$(CONFIG_HYPERV))	+= hyperv/
 +obj-$(CONFIG_BHV_VAS)	+= bhv/
  obj-$(CONFIG_CRYPTO)	+= crypto/
 diff --git arch/arm64/Kconfig arch/arm64/Kconfig
-index 5e5cf3af6..9afee1032 100644
+index 24cce3b9f..f5603abd1 100644
 --- arch/arm64/Kconfig
 +++ arch/arm64/Kconfig
-@@ -1149,6 +1149,16 @@ config XEN
+@@ -1180,6 +1180,16 @@ config XEN
  	help
  	  Say Y if you want to run Linux in a Virtual Machine on Xen on ARM64.
  
@@ -28,7 +28,7 @@ index 5e5cf3af6..9afee1032 100644
 +
  config FORCE_MAX_ZONEORDER
  	int
- 	default "14" if (ARM64_64K_PAGES && TRANSPARENT_HUGEPAGE)
+ 	default "14" if ARM64_64K_PAGES
 diff --git arch/arm64/bhv/Makefile arch/arm64/bhv/Makefile
 new file mode 100644
 index 000000000..e66e83fdb
@@ -634,19 +634,19 @@ index 000000000..605d0ae18
 +	return bhv_start_integrity_arch();
 +}
 diff --git arch/arm64/include/asm/alternative.h arch/arm64/include/asm/alternative.h
-index 3cb3c4ab3..632546cb6 100644
+index a38b92e11..8bdbcf5d1 100644
 --- arch/arm64/include/asm/alternative.h
 +++ arch/arm64/include/asm/alternative.h
-@@ -14,6 +14,8 @@
+@@ -10,6 +10,8 @@
+ #include <linux/types.h>
  #include <linux/stddef.h>
- #include <linux/stringify.h>
  
 +#include <bhv/interface/patch.h>
 +
  struct alt_instr {
  	s32 orig_offset;	/* offset to original instruction */
  	s32 alt_offset;		/* offset to replacement instruction */
-@@ -22,8 +24,14 @@ struct alt_instr {
+@@ -18,8 +20,14 @@ struct alt_instr {
  	u8  alt_len;		/* size of new instruction(s), <= orig_len */
  };
  
@@ -747,10 +747,10 @@ index 000000000..0a0a0dedd
 +
 +#endif /* __ASM_BHV_PATCH_H__ */
 diff --git arch/arm64/include/asm/kvm_mmu.h arch/arm64/include/asm/kvm_mmu.h
-index 331394306..0cdb121c0 100644
+index 02d378887..4ae56cc26 100644
 --- arch/arm64/include/asm/kvm_mmu.h
 +++ arch/arm64/include/asm/kvm_mmu.h
-@@ -80,8 +80,17 @@ alternative_cb_end
+@@ -116,8 +116,17 @@ alternative_cb_end
  #include <asm/cacheflush.h>
  #include <asm/mmu_context.h>
  
@@ -766,10 +766,10 @@ index 331394306..0cdb121c0 100644
  			__le32 *origptr, __le32 *updptr, int nr_inst);
 +#endif /* CONFIG_BHV_VAS */
  void kvm_compute_layout(void);
+ void kvm_apply_hyp_relocations(void);
  
- static __always_inline unsigned long __kern_hyp_va(unsigned long v)
 diff --git arch/arm64/kernel/alternative.c arch/arm64/kernel/alternative.c
-index 73039949b..12cdee47c 100644
+index 7bbf5104b..bfdb6ceae 100644
 --- arch/arm64/kernel/alternative.c
 +++ arch/arm64/kernel/alternative.c
 @@ -17,6 +17,9 @@
@@ -779,34 +779,24 @@ index 73039949b..12cdee47c 100644
 +#include <bhv/patch.h>
 +#include <bhv/integrity.h>
 +
- #define __ALT_PTR(a,f)		((void *)&(a)->f + (a)->f)
+ #define __ALT_PTR(a, f)		((void *)&(a)->f + (a)->f)
  #define ALT_ORIG_PTR(a)		__ALT_PTR(a, orig_offset)
  #define ALT_REPL_PTR(a)		__ALT_PTR(a, alt_offset)
-@@ -94,8 +97,13 @@ static u32 get_alt_insn(struct alt_instr *alt, __le32 *insnptr, __le32 *altinsnp
+@@ -95,8 +98,13 @@ static __always_inline u32 get_alt_insn(struct alt_instr *alt, __le32 *insnptr,
  	return insn;
  }
  
 +#ifdef CONFIG_BHV_VAS
-+static void patch_alternative(struct alt_instr *alt, __le32 *origptr,
++static noinstr void patch_alternative(struct alt_instr *alt, __le32 *origptr,
 +			      __le32 *updptr, int nr_inst, bhv_patch_arg_t *arg)
 +#else
- static void patch_alternative(struct alt_instr *alt,
+ static noinstr void patch_alternative(struct alt_instr *alt,
  			      __le32 *origptr, __le32 *updptr, int nr_inst)
 +#endif
  {
  	__le32 *replptr;
  	int i;
-@@ -132,14 +140,22 @@ static void clean_dcache_range_nopatch(u64 start, u64 end)
- 	} while (cur += d_size, cur < end);
- }
- 
--static void __apply_alternatives(void *alt_region,  bool is_module,
-+static void __apply_alternatives(void *alt_region, bool is_module,
- 				 unsigned long *feature_mask)
- {
--	struct alt_instr *alt;
- 	struct alt_region *region = alt_region;
-+	struct alt_instr *alt;
+@@ -140,6 +148,14 @@ static void __nocfi __apply_alternatives(struct alt_region *region, bool is_modu
  	__le32 *origptr, *updptr;
  	alternative_cb_t alt_cb;
  
@@ -821,7 +811,7 @@ index 73039949b..12cdee47c 100644
  	for (alt = region->begin; alt < region->end; alt++) {
  		int nr_inst;
  
-@@ -167,7 +183,11 @@ static void __apply_alternatives(void *alt_region,  bool is_module,
+@@ -167,7 +183,11 @@ static void __nocfi __apply_alternatives(struct alt_region *region, bool is_modu
  		else
  			alt_cb  = ALT_REPL_PTR(alt);
  
@@ -850,12 +840,12 @@ index 73039949b..12cdee47c 100644
  }
  #endif
 diff --git arch/arm64/kernel/jump_label.c arch/arm64/kernel/jump_label.c
-index 9a8a0ae1e..c95fe7342 100644
+index fc98037e1..a6fceaa70 100644
 --- arch/arm64/kernel/jump_label.c
 +++ arch/arm64/kernel/jump_label.c
-@@ -9,10 +9,14 @@
- #include <linux/jump_label.h>
+@@ -10,10 +10,14 @@
  #include <asm/insn.h>
+ #include <asm/patching.h>
  
 +#include <bhv/bhv.h>
 +#include <bhv/integrity.h>
@@ -869,7 +859,7 @@ index 9a8a0ae1e..c95fe7342 100644
  	u32 insn;
  
  	if (type == JUMP_LABEL_JMP) {
-@@ -23,6 +27,13 @@ void arch_jump_label_transform(struct jump_entry *entry,
+@@ -24,6 +28,13 @@ void arch_jump_label_transform(struct jump_entry *entry,
  		insn = aarch64_insn_gen_nop();
  	}
  
@@ -884,12 +874,12 @@ index 9a8a0ae1e..c95fe7342 100644
  }
  
 diff --git arch/arm64/kernel/proton-pack.c arch/arm64/kernel/proton-pack.c
-index f6e4e3737..ab3308fb8 100644
+index 40be3a7c2..e7956f96f 100644
 --- arch/arm64/kernel/proton-pack.c
 +++ arch/arm64/kernel/proton-pack.c
-@@ -27,6 +27,13 @@
- #include <asm/spectre.h>
- #include <asm/traps.h>
+@@ -32,6 +32,13 @@
+ #include <asm/vectors.h>
+ #include <asm/virt.h>
  
 +#include <bhv/bhv.h>
 +#include <bhv/integrity.h>
@@ -901,7 +891,7 @@ index f6e4e3737..ab3308fb8 100644
  /*
   * We try to ensure that the mitigation state can never change as the result of
   * onlining a late CPU.
-@@ -551,10 +558,21 @@ static enum mitigation_state spectre_v4_enable_hw_mitigation(void)
+@@ -577,9 +584,16 @@ static enum mitigation_state spectre_v4_enable_hw_mitigation(void)
   * Patch a branch over the Spectre-v4 mitigation code with a NOP so that
   * we fallthrough and check whether firmware needs to be called on this CPU.
   */
@@ -916,14 +906,9 @@ index f6e4e3737..ab3308fb8 100644
  						  __le32 *updptr, int nr_inst)
 +#endif /* CONFIG_BHV_VAS */
  {
-+#ifdef CONFIG_BHV_VAS
-+	u32 insn;
-+#endif /* CONFIG_BHV_VAS */
-+
  	BUG_ON(nr_inst != 1); /* Branch -> NOP */
  
- 	if (spectre_v4_mitigations_off())
-@@ -563,17 +581,41 @@ void __init spectre_v4_patch_fw_mitigation_enable(struct alt_instr *alt,
+@@ -589,17 +603,41 @@ void __init spectre_v4_patch_fw_mitigation_enable(struct alt_instr *alt,
  	if (cpus_have_final_cap(ARM64_SSBS))
  		return;
  
@@ -931,7 +916,7 @@ index f6e4e3737..ab3308fb8 100644
 +	if (spectre_v4_mitigations_dynamic()) {
 +#ifdef CONFIG_BHV_VAS
 +		if (bhv_integrity_is_enabled()) {
-+			insn = cpu_to_le32(aarch64_insn_gen_nop());
++			u32 insn = cpu_to_le32(aarch64_insn_gen_nop());
 +			bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
 +				bhv_virt_to_phys((void *)updptr);
 +			memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &insn,
@@ -954,19 +939,21 @@ index f6e4e3737..ab3308fb8 100644
   * to call into firmware to adjust the mitigation state.
   */
 +#ifdef CONFIG_BHV_VAS
-+void __init spectre_v4_patch_fw_mitigation_conduit(struct alt_instr *alt,
++void __init smccc_patch_fw_mitigation_conduit(struct alt_instr *alt,
 +						   __le32 *origptr,
 +						   __le32 *updptr, int nr_inst,
 +						   bhv_patch_arg_t *bhv_arg)
 +#else /* !CONFIG_BHV_VAS */
- void __init spectre_v4_patch_fw_mitigation_conduit(struct alt_instr *alt,
- 						   __le32 *origptr,
- 						   __le32 *updptr, int nr_inst)
+ void __init smccc_patch_fw_mitigation_conduit(struct alt_instr *alt,
+-					       __le32 *origptr,
+-					       __le32 *updptr, int nr_inst)
++						   __le32 *origptr,
++						   __le32 *updptr, int nr_inst)
 +#endif /* CONFIG_BHV_VAS */
  {
  	u32 insn;
  
-@@ -590,7 +632,22 @@ void __init spectre_v4_patch_fw_mitigation_conduit(struct alt_instr *alt,
+@@ -616,7 +654,22 @@ void __init smccc_patch_fw_mitigation_conduit(struct alt_instr *alt,
  		return;
  	}
  
@@ -989,11 +976,205 @@ index f6e4e3737..ab3308fb8 100644
  }
  
  static enum mitigation_state spectre_v4_enable_fw_mitigation(void)
+@@ -1062,30 +1115,88 @@ void spectre_bhb_enable_mitigation(const struct arm64_cpu_capabilities *entry)
+ }
+ 
+ /* Patched to NOP when enabled */
++#ifdef CONFIG_BHV_VAS
++void noinstr spectre_bhb_patch_loop_mitigation_enable(struct alt_instr *alt,
++						      __le32 *origptr,
++						      __le32 *updptr,
++						      int nr_inst,
++						      bhv_patch_arg_t *bhv_arg)
++#else /* !CONFIG_BHV_VAS */
+ void noinstr spectre_bhb_patch_loop_mitigation_enable(struct alt_instr *alt,
+ 						     __le32 *origptr,
+ 						      __le32 *updptr, int nr_inst)
++#endif /* CONFIG_BHV_VAS */
+ {
+ 	BUG_ON(nr_inst != 1);
+ 
+-	if (test_bit(BHB_LOOP, &system_bhb_mitigations))
++	if (test_bit(BHB_LOOP, &system_bhb_mitigations)) {
++#ifdef CONFIG_BHV_VAS
++		if (bhv_integrity_is_enabled()) {
++			u32 insn = cpu_to_le32(aarch64_insn_gen_nop());
++			bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++				bhv_virt_to_phys((void *)updptr);
++			memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &insn,
++			       sizeof(insn));
++			bhv_arg->bhv_patch_patch_arg.size = sizeof(insn);
++			bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++					  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE,
++					  bhv_arg);
++			updptr++;
++		} else {
++			*updptr++ = cpu_to_le32(aarch64_insn_gen_nop());
++		}
++#else /* !CONFIG_BHV_VAS */
+ 		*updptr++ = cpu_to_le32(aarch64_insn_gen_nop());
++#endif /* CONFIG_BHV_VAS */
++	}
+ }
+ 
+ /* Patched to NOP when enabled */
++#ifdef CONFIG_BHV_VAS
++void noinstr spectre_bhb_patch_fw_mitigation_enabled(struct alt_instr *alt,
++						     __le32 *origptr,
++						     __le32 *updptr,
++						     int nr_inst,
++						     bhv_patch_arg_t *bhv_arg)
++#else /* !CONFIG_BHV_VAS */
+ void noinstr spectre_bhb_patch_fw_mitigation_enabled(struct alt_instr *alt,
+ 						   __le32 *origptr,
+ 						   __le32 *updptr, int nr_inst)
++#endif /* CONFIG_BHV_VAS */
+ {
+ 	BUG_ON(nr_inst != 1);
+ 
+-	if (test_bit(BHB_FW, &system_bhb_mitigations))
++	if (test_bit(BHB_FW, &system_bhb_mitigations)) {
++#ifdef CONFIG_BHV_VAS
++		if (bhv_integrity_is_enabled()) {
++			u32 insn = cpu_to_le32(aarch64_insn_gen_nop());
++			bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++				bhv_virt_to_phys((void *)updptr);
++			memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &insn,
++			       sizeof(insn));
++			bhv_arg->bhv_patch_patch_arg.size = sizeof(insn);
++			bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++					  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE,
++					  bhv_arg);
++			updptr++;
++		} else {
++			*updptr++ = cpu_to_le32(aarch64_insn_gen_nop());
++		}
++#else /* !CONFIG_BHV_VAS */
+ 		*updptr++ = cpu_to_le32(aarch64_insn_gen_nop());
++#endif /* CONFIG_BHV_VAS */
++	}
+ }
+ 
+ /* Patched to correct the immediate */
++#ifdef CONFIG_BHV_VAS
++void noinstr spectre_bhb_patch_loop_iter(struct alt_instr *alt, __le32 *origptr,
++					 __le32 *updptr, int nr_inst,
++					 bhv_patch_arg_t *bhv_arg)
++#else /* !CONFIG_BHV_VAS */
+ void noinstr spectre_bhb_patch_loop_iter(struct alt_instr *alt,
+ 				   __le32 *origptr, __le32 *updptr, int nr_inst)
++#endif /* CONFIG_BHV_VAS */
+ {
+ 	u8 rd;
+ 	u32 insn;
+@@ -1101,12 +1212,33 @@ void noinstr spectre_bhb_patch_loop_iter(struct alt_instr *alt,
+ 	insn = aarch64_insn_gen_movewide(rd, loop_count, 0,
+ 					 AARCH64_INSN_VARIANT_64BIT,
+ 					 AARCH64_INSN_MOVEWIDE_ZERO);
++#ifdef CONFIG_BHV_VAS
++	if (bhv_integrity_is_enabled()) {
++		bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++			bhv_virt_to_phys((void *)updptr);
++		memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &insn,
++		       sizeof(insn));
++		bhv_arg->bhv_patch_patch_arg.size = sizeof(insn);
++		bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++				  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++		updptr++;
++	} else {
++		*updptr++ = cpu_to_le32(insn);
++	}
++#else /* !CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ }
+ 
+ /* Patched to mov WA3 when supported */
++#ifdef CONFIG_BHV_VAS
++void noinstr spectre_bhb_patch_wa3(struct alt_instr *alt, __le32 *origptr,
++				   __le32 *updptr, int nr_inst,
++				   bhv_patch_arg_t *bhv_arg)
++#else /* !CONFIG_BHV_VAS */
+ void noinstr spectre_bhb_patch_wa3(struct alt_instr *alt,
+ 				   __le32 *origptr, __le32 *updptr, int nr_inst)
++#endif /* CONFIG_BHV_VAS */
+ {
+ 	u8 rd;
+ 	u32 insn;
+@@ -1127,20 +1259,68 @@ void noinstr spectre_bhb_patch_wa3(struct alt_instr *alt,
+ 	if (WARN_ON_ONCE(insn == AARCH64_BREAK_FAULT))
+ 		return;
+ 
++#ifdef CONFIG_BHV_VAS
++	if (bhv_integrity_is_enabled()) {
++		bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++			bhv_virt_to_phys((void *)updptr);
++		memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &insn,
++		       sizeof(insn));
++		bhv_arg->bhv_patch_patch_arg.size = sizeof(insn);
++		bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++				  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++		updptr++;
++	} else {
++		*updptr++ = cpu_to_le32(insn);
++	}
++#else /* !CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ }
+ 
+ /* Patched to NOP when not supported */
++#ifdef CONFIG_BHV_VAS
++void __init spectre_bhb_patch_clearbhb(struct alt_instr *alt, __le32 *origptr,
++				       __le32 *updptr, int nr_inst,
++				       bhv_patch_arg_t *bhv_arg)
++#else /* !CONFIG_BHV_VAS */
+ void __init spectre_bhb_patch_clearbhb(struct alt_instr *alt,
+ 				   __le32 *origptr, __le32 *updptr, int nr_inst)
++#endif /* CONFIG_BHV_VAS */
+ {
+ 	BUG_ON(nr_inst != 2);
+ 
+ 	if (test_bit(BHB_INSN, &system_bhb_mitigations))
+ 		return;
+ 
++#ifdef CONFIG_BHV_VAS
++	if (bhv_integrity_is_enabled()) {
++		u32 insn = cpu_to_le32(aarch64_insn_gen_nop());
++		bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++			bhv_virt_to_phys((void *)updptr);
++		memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &insn,
++		       sizeof(insn));
++		bhv_arg->bhv_patch_patch_arg.size = sizeof(insn);
++		bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++				  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++		updptr++;
++
++		insn = cpu_to_le32(aarch64_insn_gen_nop());
++		bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++			bhv_virt_to_phys((void *)updptr);
++		memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &insn,
++		       sizeof(insn));
++		bhv_arg->bhv_patch_patch_arg.size = sizeof(insn);
++		bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++				  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++		updptr++;
++	} else {
++		*updptr++ = cpu_to_le32(aarch64_insn_gen_nop());
++		*updptr++ = cpu_to_le32(aarch64_insn_gen_nop());
++	}
++#else /* !CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(aarch64_insn_gen_nop());
+ 	*updptr++ = cpu_to_le32(aarch64_insn_gen_nop());
++#endif /* CONFIG_BHV_VAS */
+ }
+ 
+ #ifdef CONFIG_BPF_SYSCALL
 diff --git arch/arm64/kernel/setup.c arch/arm64/kernel/setup.c
-index eb4b24652..849c9741f 100644
+index be5f85b0a..315221a68 100644
 --- arch/arm64/kernel/setup.c
 +++ arch/arm64/kernel/setup.c
-@@ -51,6 +51,8 @@
+@@ -52,6 +52,8 @@
  #include <asm/xen/hypervisor.h>
  #include <asm/mmu_context.h>
  
@@ -1002,7 +1183,7 @@ index eb4b24652..849c9741f 100644
  static int num_standard_resources;
  static struct resource *standard_resources;
  
-@@ -323,6 +325,7 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
+@@ -330,6 +332,7 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
  	cpu_uninstall_idmap();
  
  	xen_early_init();
@@ -1011,10 +1192,10 @@ index eb4b24652..849c9741f 100644
  
  	if (!efi_enabled(EFI_BOOT) && ((u64)_text % MIN_KIMG_ALIGN) != 0)
 diff --git arch/arm64/kernel/vmlinux.lds.S arch/arm64/kernel/vmlinux.lds.S
-index 30c102978..cc362549c 100644
+index 184abd7c4..11ffc6b0b 100644
 --- arch/arm64/kernel/vmlinux.lds.S
 +++ arch/arm64/kernel/vmlinux.lds.S
-@@ -135,6 +135,7 @@ SECTIONS
+@@ -161,6 +161,7 @@ SECTIONS
  			IDMAP_TEXT
  			HIBERNATE_TEXT
  			TRAMP_TEXT
@@ -1022,7 +1203,7 @@ index 30c102978..cc362549c 100644
  			*(.fixup)
  			*(.gnu.warning)
  		. = ALIGN(16);
-@@ -176,13 +177,27 @@ SECTIONS
+@@ -204,13 +205,27 @@ SECTIONS
  
  	INIT_TEXT_SECTION(8)
  
@@ -1050,7 +1231,7 @@ index 30c102978..cc362549c 100644
  	.altinstructions : {
  		__alt_instructions = .;
  		*(.altinstructions)
-@@ -250,6 +265,17 @@ SECTIONS
+@@ -280,6 +295,17 @@ SECTIONS
  		__mmuoff_data_end = .;
  	}
  
@@ -1069,12 +1250,12 @@ index 30c102978..cc362549c 100644
  	__pecoff_data_rawsize = ABSOLUTE(. - __initdata_begin);
  	_edata = .;
 diff --git arch/arm64/kvm/va_layout.c arch/arm64/kvm/va_layout.c
-index e0404bcab..1b72d7720 100644
+index acdb7b3cc..4f67c1abc 100644
 --- arch/arm64/kvm/va_layout.c
 +++ arch/arm64/kvm/va_layout.c
-@@ -12,6 +12,11 @@
- #include <asm/insn.h>
+@@ -13,6 +13,11 @@
  #include <asm/kvm_mmu.h>
+ #include <asm/memory.h>
  
 +#ifdef CONFIG_BHV_VAS
 +#include <bhv/interface/hypercall.h>
@@ -1084,7 +1265,7 @@ index e0404bcab..1b72d7720 100644
  /*
   * The LSB of the HYP VA tag
   */
-@@ -97,8 +102,26 @@ static u32 compute_instruction(int n, u32 rd, u32 rn)
+@@ -151,8 +156,26 @@ static u32 compute_instruction(int n, u32 rd, u32 rn)
  	return insn;
  }
  
@@ -1113,7 +1294,7 @@ index e0404bcab..1b72d7720 100644
  {
  	int i;
  
-@@ -116,7 +139,17 @@ void __init kvm_update_va_mask(struct alt_instr *alt,
+@@ -170,7 +193,17 @@ void __init kvm_update_va_mask(struct alt_instr *alt,
  		 * address), NOP everything after masking the kernel VA.
  		 */
  		if (has_vhe() || (!tag_val && i > 0)) {
@@ -1131,7 +1312,7 @@ index e0404bcab..1b72d7720 100644
  			continue;
  		}
  
-@@ -127,15 +160,29 @@ void __init kvm_update_va_mask(struct alt_instr *alt,
+@@ -181,12 +214,26 @@ void __init kvm_update_va_mask(struct alt_instr *alt,
  		insn = compute_instruction(i, rd, rn);
  		BUG_ON(insn == AARCH64_BREAK_FAULT);
  
@@ -1147,9 +1328,6 @@ index e0404bcab..1b72d7720 100644
  	}
  }
  
- void *__kvm_bp_vect_base;
- int __kvm_harden_el2_vector_slot;
- 
 +#ifdef CONFIG_BHV_VAS
 +void kvm_patch_vector_branch(struct alt_instr *alt, __le32 *origptr,
 +			     __le32 *updptr, int nr_inst,
@@ -1161,23 +1339,7 @@ index e0404bcab..1b72d7720 100644
  {
  	u64 addr;
  	u32 insn;
-@@ -170,7 +217,15 @@ void kvm_patch_vector_branch(struct alt_instr *alt,
- 						-16,
- 						AARCH64_INSN_VARIANT_64BIT,
- 						AARCH64_INSN_LDST_STORE_PAIR_PRE_INDEX);
-+#ifdef CONFIG_BHV_VAS
-+	if (bhv_integrity_is_enabled()) {
-+		kvm_bhv_alt_patch(updptr++, insn, bhv_arg);
-+	} else {
-+		*updptr++ = cpu_to_le32(insn);
-+	}
-+#else /* CONFIG_BHV_VAS */
- 	*updptr++ = cpu_to_le32(insn);
-+#endif /* CONFIG_BHV_VAS */
- 
- 	/* movz x0, #(addr & 0xffff) */
- 	insn = aarch64_insn_gen_movewide(AARCH64_INSN_REG_0,
-@@ -178,15 +233,29 @@ void kvm_patch_vector_branch(struct alt_instr *alt,
+@@ -216,15 +263,29 @@ void kvm_patch_vector_branch(struct alt_instr *alt,
  					 0,
  					 AARCH64_INSN_VARIANT_64BIT,
  					 AARCH64_INSN_MOVEWIDE_ZERO);
@@ -1211,7 +1373,7 @@ index e0404bcab..1b72d7720 100644
  
  	/* movk x0, #((addr >> 32) & 0xffff), lsl #32 */
  	insn = aarch64_insn_gen_movewide(AARCH64_INSN_REG_0,
-@@ -194,10 +263,26 @@ void kvm_patch_vector_branch(struct alt_instr *alt,
+@@ -232,12 +293,28 @@ void kvm_patch_vector_branch(struct alt_instr *alt,
  					 32,
  					 AARCH64_INSN_VARIANT_64BIT,
  					 AARCH64_INSN_MOVEWIDE_KEEP);
@@ -1238,13 +1400,79 @@ index e0404bcab..1b72d7720 100644
  	*updptr++ = cpu_to_le32(insn);
 +#endif /* CONFIG_BHV_VAS */
  }
+ 
+ static void generate_mov_q(u64 val, __le32 *origptr, __le32 *updptr, int nr_inst)
+@@ -256,7 +333,15 @@ static void generate_mov_q(u64 val, __le32 *origptr, __le32 *updptr, int nr_inst
+ 					 0,
+ 					 AARCH64_INSN_VARIANT_64BIT,
+ 					 AARCH64_INSN_MOVEWIDE_ZERO);
++#ifdef CONFIG_BHV_VAS
++	if (bhv_integrity_is_enabled()) {
++		kvm_bhv_alt_patch(updptr++, insn, bhv_arg);
++	} else {
++		*updptr++ = cpu_to_le32(insn);
++	}
++#else /* CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ 
+ 	/* movk rd, #((val >> 16) & 0xffff), lsl #16 */
+ 	insn = aarch64_insn_gen_movewide(rd,
+@@ -264,7 +349,15 @@ static void generate_mov_q(u64 val, __le32 *origptr, __le32 *updptr, int nr_inst
+ 					 16,
+ 					 AARCH64_INSN_VARIANT_64BIT,
+ 					 AARCH64_INSN_MOVEWIDE_KEEP);
++#ifdef CONFIG_BHV_VAS
++	if (bhv_integrity_is_enabled()) {
++		kvm_bhv_alt_patch(updptr++, insn, bhv_arg);
++	} else {
++		*updptr++ = cpu_to_le32(insn);
++	}
++#else /* CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ 
+ 	/* movk rd, #((val >> 32) & 0xffff), lsl #32 */
+ 	insn = aarch64_insn_gen_movewide(rd,
+@@ -272,7 +365,15 @@ static void generate_mov_q(u64 val, __le32 *origptr, __le32 *updptr, int nr_inst
+ 					 32,
+ 					 AARCH64_INSN_VARIANT_64BIT,
+ 					 AARCH64_INSN_MOVEWIDE_KEEP);
++#ifdef CONFIG_BHV_VAS
++	if (bhv_integrity_is_enabled()) {
++		kvm_bhv_alt_patch(updptr++, insn, bhv_arg);
++	} else {
++		*updptr++ = cpu_to_le32(insn);
++	}
++#else /* CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ 
+ 	/* movk rd, #((val >> 48) & 0xffff), lsl #48 */
+ 	insn = aarch64_insn_gen_movewide(rd,
+@@ -280,7 +381,15 @@ static void generate_mov_q(u64 val, __le32 *origptr, __le32 *updptr, int nr_inst
+ 					 48,
+ 					 AARCH64_INSN_VARIANT_64BIT,
+ 					 AARCH64_INSN_MOVEWIDE_KEEP);
++#ifdef CONFIG_BHV_VAS
++	if (bhv_integrity_is_enabled()) {
++		kvm_bhv_alt_patch(updptr++, insn, bhv_arg);
++	} else {
++		*updptr++ = cpu_to_le32(insn);
++	}
++#else /* CONFIG_BHV_VAS */
+ 	*updptr++ = cpu_to_le32(insn);
++#endif /* CONFIG_BHV_VAS */
+ }
+ 
+ void kvm_get_kimage_voffset(struct alt_instr *alt,
 diff --git arch/arm64/mm/init.c arch/arm64/mm/init.c
-index c0a7f0d90..ced3f3d0b 100644
+index 3b269c756..18998fbb8 100644
 --- arch/arm64/mm/init.c
 +++ arch/arm64/mm/init.c
-@@ -43,6 +43,9 @@
- #include <asm/tlb.h>
+@@ -46,6 +46,9 @@
  #include <asm/alternative.h>
+ #include <asm/xen/swiotlb-xen.h>
  
 +#include <bhv/bhv.h>
 +#include <bhv/start.h>
@@ -1252,7 +1480,7 @@ index c0a7f0d90..ced3f3d0b 100644
  /*
   * We need to be able to catch inadvertent references to memstart_addr
   * that occur (potentially in generic code) before arm64_memblock_init()
-@@ -564,6 +567,7 @@ void __init mem_init(void)
+@@ -439,6 +442,7 @@ void __init mem_init(void)
  
  void free_initmem(void)
  {
@@ -1275,10 +1503,10 @@ index 30dec0197..3235bbc86 100644
  obj-y += kernel/
  obj-y += mm/
 diff --git arch/x86/Kconfig arch/x86/Kconfig
-index c3d9f56c9..753029b28 100644
+index 57f5e8817..40425bf3c 100644
 --- arch/x86/Kconfig
 +++ arch/x86/Kconfig
-@@ -864,6 +864,16 @@ config ACRN_GUEST
+@@ -862,6 +862,16 @@ config ACRN_GUEST
  	  IOT with small footprint and real-time features. More details can be
  	  found in https://projectacrn.org/.
  
@@ -1774,10 +2002,10 @@ index 000000000..9b8a4ea7f
 +}
 diff --git arch/x86/bhv/patch_alternative.c arch/x86/bhv/patch_alternative.c
 new file mode 100644
-index 000000000..110871a1a
+index 000000000..371da7859
 --- /dev/null
 +++ arch/x86/bhv/patch_alternative.c
-@@ -0,0 +1,432 @@
+@@ -0,0 +1,737 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -1792,8 +2020,12 @@ index 000000000..110871a1a
 +#include <bhv/interface/patch.h>
 +#include <asm/bhv/patch.h>
 +
-+#include <asm/paravirt_types.h>
 +#include <asm/sections.h>
++#include <asm/text-patching.h>
++#include <asm/insn.h>
++
++#include <linux/static_call.h>
++#include <linux/memory.h>
 +
 +void bhv_alternatives_add_module_arch(struct alt_instr *begin,
 +				      struct alt_instr *end,
@@ -1818,18 +2050,17 @@ index 000000000..110871a1a
 +		if (noplen > ASM_NOP_MAX)
 +			noplen = ASM_NOP_MAX;
 +
-+		if (patch &&
-+		    total_length >=
-+			    sizeof(bhv_arg->bhv_patch_patch_arg.src_value))
-+			panic("Size for NOP patch exceeded!");
-+
 +		if (patch) {
++			if ((total_length + noplen) >
++			    sizeof(bhv_arg->bhv_patch_patch_arg.src_value))
++				panic("Size for NOP patch exceeded!");
++
 +			memcpy(bhv_arg->bhv_patch_patch_arg.src_value +
 +				       total_length,
-+			       ideal_nops[noplen], noplen);
++			       x86_nops[noplen], noplen);
 +			total_length += noplen;
 +		} else {
-+			memcpy(insns, ideal_nops[noplen], noplen);
++			memcpy(insns, x86_nops[noplen], noplen);
 +			insns += noplen;
 +		}
 +
@@ -1846,20 +2077,71 @@ index 000000000..110871a1a
 +	}
 +}
 +
-+static bool __bhv_text bhv_optimize_nops(struct alt_instr *a, u8 *instr,
-+					 bhv_patch_arg_t *bhv_arg, bool patch)
++/*
++ * bhv_optimize_nops_range() - Optimize a sequence of single byte NOPs (0x90)
++ *
++ * @instr: instruction byte stream
++ * @instrlen: length of the above
++ * @off: offset within @instr where the first NOP has been detected
++ *
++ * Return: number of NOPs found (and replaced).
++ */
++static __always_inline int bhv_optimize_nops_range(u8 *instr, u8 instrlen,
++						   int off,
++						   bhv_patch_arg_t *bhv_arg,
++						   bool patch)
 +{
-+	int i;
++	int i = off, nnops;
 +
-+	for (i = 0; i < a->padlen; i++) {
-+		if (instr[i] != 0x90) {
-+			return false;
-+		}
++	while (i < instrlen) {
++		if (instr[i] != 0x90)
++			break;
++
++		i++;
 +	}
 +
-+	bhv_add_nops(instr + (a->instrlen - a->padlen), a->padlen, bhv_arg,
-+		     patch);
-+	return true;
++	nnops = i - off;
++
++	if (nnops <= 1)
++		return nnops;
++
++	bhv_add_nops(instr + off, nnops, bhv_arg, patch);
++
++	return nnops;
++}
++
++/*
++ * "noinline" to cause control flow change and thus invalidate I$ and
++ * cause refetch after modification.
++ */
++static void __bhv_text noinline bhv_optimize_nops(u8 *instr, size_t len,
++						  bhv_patch_arg_t *bhv_arg,
++						  bool patch)
++{
++	struct insn insn;
++	int i = 0;
++
++	/*
++	 * Jump over the non-NOP insns and optimize single-byte NOPs into bigger
++	 * ones.
++	 */
++	for (;;) {
++		if (insn_decode_kernel(&insn, &instr[i]))
++			return;
++
++		/*
++		 * See if this and any potentially following NOPs can be
++		 * optimized.
++		 */
++		if (insn.length == 1 && insn.opcode.bytes[0] == 0x90)
++			i += bhv_optimize_nops_range(instr, len, i, bhv_arg,
++						     patch);
++		else
++			i += insn.length;
++
++		if (i >= len)
++			return;
++	}
 +}
 +
 +static void __bhv_text bhv_recompute_jump(struct alt_instr *a, u8 *orig_insn,
@@ -1915,6 +2197,7 @@ index 000000000..110871a1a
 +	return;
 +}
 +
++#ifdef CONFIG_SMP
 +static int __bhv_text bhv_alternatives_smp_lock_unlock_apply_vault(
 +	u8 *target, bool lock, bhv_patch_arg_t *bhv_arg)
 +{
@@ -1968,6 +2251,245 @@ index 000000000..110871a1a
 +
 +	return 0;
 +}
++#endif /* CONFIG_SMP */
++
++#if defined(CONFIG_RETPOLINE) && defined(CONFIG_STACK_VALIDATION)
++
++/*
++ * CALL/JMP *%\reg
++ */
++static int __bhv_text bhv_emit_indirect(int op, int reg, u8 *bytes)
++{
++	int i = 0;
++	u8 modrm;
++
++	switch (op) {
++	case CALL_INSN_OPCODE:
++		modrm = 0x10; /* Reg = 2; CALL r/m */
++		break;
++
++	case JMP32_INSN_OPCODE:
++		modrm = 0x20; /* Reg = 4; JMP r/m */
++		break;
++
++	default:
++		WARN_ON_ONCE(1);
++		return -1;
++	}
++
++	if (reg >= 8) {
++		bytes[i++] = 0x41; /* REX.B prefix */
++		reg -= 8;
++	}
++
++	modrm |= 0xc0; /* Mod = 3 */
++	modrm += reg;
++
++	bytes[i++] = 0xff; /* opcode */
++	bytes[i++] = modrm;
++
++	return i;
++}
++
++/*
++ * Rewrite the compiler generated retpoline thunk calls.
++ *
++ * For spectre_v2=off (!X86_FEATURE_RETPOLINE), rewrite them into immediate
++ * indirect instructions, avoiding the extra indirection.
++ *
++ * For example, convert:
++ *
++ *   CALL __x86_indirect_thunk_\reg
++ *
++ * into:
++ *
++ *   CALL *%\reg
++ *
++ * It also tries to inline spectre_v2=retpoline,amd when size permits.
++ */
++static int __bhv_text bhv_patch_retpoline(void *addr, struct insn *insn,
++					  u8 *bytes)
++{
++	retpoline_thunk_t *target;
++	int reg, ret, i = 0;
++	u8 op, cc;
++
++	target = addr + insn->length + insn->immediate.value;
++	reg = target - __x86_indirect_thunk_array;
++
++	if (WARN_ON_ONCE(reg & ~0xf))
++		return -1;
++
++	/* If anyone ever does: CALL/JMP *%rsp, we're in deep trouble. */
++	BUG_ON(reg == 4);
++
++	if (cpu_feature_enabled(X86_FEATURE_RETPOLINE) &&
++	    !cpu_feature_enabled(X86_FEATURE_RETPOLINE_LFENCE))
++		return -1;
++
++	op = insn->opcode.bytes[0];
++
++	/*
++	 * Convert:
++	 *
++	 *   Jcc.d32 __x86_indirect_thunk_\reg
++	 *
++	 * into:
++	 *
++	 *   Jncc.d8 1f
++	 *   [ LFENCE ]
++	 *   JMP *%\reg
++	 *   [ NOP ]
++	 * 1:
++	 */
++	/* Jcc.d32 second opcode byte is in the range: 0x80-0x8f */
++	if (op == 0x0f && (insn->opcode.bytes[1] & 0xf0) == 0x80) {
++		cc = insn->opcode.bytes[1] & 0xf;
++		cc ^= 1; /* invert condition */
++
++		bytes[i++] = 0x70 + cc; /* Jcc.d8 */
++		bytes[i++] = insn->length - 2; /* sizeof(Jcc.d8) == 2 */
++
++		/* Continue as if: JMP.d32 __x86_indirect_thunk_\reg */
++		op = JMP32_INSN_OPCODE;
++	}
++
++	/*
++	 * For RETPOLINE_AMD: prepend the indirect CALL/JMP with an LFENCE.
++	 */
++	if (cpu_feature_enabled(X86_FEATURE_RETPOLINE_LFENCE)) {
++		bytes[i++] = 0x0f;
++		bytes[i++] = 0xae;
++		bytes[i++] = 0xe8; /* LFENCE */
++	}
++
++	ret = bhv_emit_indirect(op, reg, bytes + i);
++	if (ret < 0)
++		return ret;
++	i += ret;
++
++	for (; i < insn->length;)
++		bytes[i++] = BYTES_NOP1;
++
++	return i;
++}
++
++void __bhv_text bhv_apply_retpolines_vault(s32 *s, bhv_patch_arg_t *bhv_arg)
++{
++	void *addr = (void *)s + *s;
++	struct insn insn;
++	int len, ret;
++	u8 bytes[16];
++	u8 op1, op2;
++
++	ret = bhv_vault_open_hyp();
++	if (ret)
++		return;
++
++	ret = insn_decode_kernel(&insn, addr);
++	if (WARN_ON_ONCE(ret < 0))
++		goto out;
++
++	op1 = insn.opcode.bytes[0];
++	op2 = insn.opcode.bytes[1];
++
++	switch (op1) {
++	case CALL_INSN_OPCODE:
++	case JMP32_INSN_OPCODE:
++		break;
++
++	case 0x0f: /* escape */
++		if (op2 >= 0x80 && op2 <= 0x8f)
++			break;
++		fallthrough;
++	default:
++		WARN_ON_ONCE(1);
++		goto out;
++	}
++
++	len = bhv_patch_retpoline(addr, &insn, bytes);
++	if (len == insn.length) {
++		if (len > BHV_MAX_PATCH_SZ)
++			goto out;
++
++		bhv_optimize_nops(bytes, len, bhv_arg, true);
++
++		bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++			bhv_virt_to_phys((void *)addr);
++		memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &bytes, len);
++		bhv_arg->bhv_patch_patch_arg.size = len;
++
++		bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++				  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++	}
++
++out:
++	bhv_vault_close_hyp();
++}
++
++#ifdef CONFIG_RETHUNK
++
++static int __bhv_text bhv_patch_return(void *addr, struct insn *insn, u8 *bytes)
++{
++	int i = 0;
++
++	if (cpu_feature_enabled(X86_FEATURE_RETHUNK))
++		return -1;
++
++	bytes[i++] = RET_INSN_OPCODE;
++
++	for (; i < insn->length;)
++		bytes[i++] = INT3_INSN_OPCODE;
++
++	return i;
++}
++
++void __bhv_text bhv_apply_returns_vault(s32 *s, bhv_patch_arg_t *bhv_arg)
++{
++	void *dest = NULL, *addr = (void *)s + *s;
++	struct insn insn;
++	int len, ret;
++	u8 bytes[16];
++	u8 op;
++
++	ret = bhv_vault_open_hyp();
++	if (ret)
++		return;
++
++	ret = insn_decode_kernel(&insn, addr);
++	if (WARN_ON_ONCE(ret < 0))
++		goto out;
++
++	op = insn.opcode.bytes[0];
++	if (op == JMP32_INSN_OPCODE)
++		dest = addr + insn.length + insn.immediate.value;
++
++	if (__static_call_fixup(addr, op, dest) ||
++	    WARN_ONCE(dest != &__x86_return_thunk,
++		      "missing return thunk: %pS-%pS: %*ph", addr, dest, 5,
++		      addr))
++		goto out;
++
++	len = bhv_patch_return(addr, &insn, bytes);
++	if (len == insn.length) {
++		if (len > BHV_MAX_PATCH_SZ)
++			goto out;
++
++		bhv_arg->bhv_patch_patch_arg.dest_phys_addr =
++			bhv_virt_to_phys((void *)addr);
++		memcpy(bhv_arg->bhv_patch_patch_arg.src_value, &bytes, len);
++		bhv_arg->bhv_patch_patch_arg.size = len;
++
++		bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++				  BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++	}
++
++out:
++	bhv_vault_close_hyp();
++}
++#endif /* CONFIG_RETHUNK */
++
++#endif /* defined(CONFIG_RETPOLINE) && defined(CONFIG_STACK_VALIDATION) */
 +
 +#ifdef CONFIG_PARAVIRT
 +
@@ -1987,8 +2509,8 @@ index 000000000..110871a1a
 +	BUG_ON(p->len > MAX_PATCH_LEN);
 +	/* prep the buffer with the original instructions */
 +	memcpy(insn_buff, p->instr, p->len);
-+	used = pv_ops.init.patch(p->type, insn_buff, (unsigned long)p->instr,
-+				 p->len);
++	used = paravirt_patch(p->type, insn_buff, (unsigned long)p->instr,
++			      p->len);
 +
 +	BUG_ON(used > p->len);
 +
@@ -2019,12 +2541,22 @@ index 000000000..110871a1a
 +}
 +#endif /* CONFIG_PARAVIRT */
 +
++/*
++ * Are we looking at a near JMP with a 1 or 4-byte displacement.
++ */
++static __always_inline bool is_jmp(const u8 opcode)
++{
++	return opcode == 0xeb || opcode == 0xe9;
++}
++
 +static int __bhv_text bhv_alternatives_patch_vault(struct alt_instr *a,
 +						   bhv_patch_arg_t *bhv_arg)
 +{
++	int rv;
 +	u8 *instr, *replacement;
 +	u8 insn_buff[254];
 +	int insn_buff_sz = 0;
++	u16 feature = a->cpuid & ~ALTINSTR_FLAG_INV;
 +
 +	instr = (u8 *)&a->instr_offset + a->instr_offset;
 +	replacement = (u8 *)&a->repl_offset + a->repl_offset;
@@ -2037,11 +2569,8 @@ index 000000000..110871a1a
 +		return -EACCES;
 +	}
 +
-+	if (!boot_cpu_has(a->cpuid)) {
-+		if (a->padlen > 1) {
-+			bhv_optimize_nops(a, instr, bhv_arg, true);
-+		}
-+
++	if (!boot_cpu_has(feature) == !(a->cpuid & ALTINSTR_FLAG_INV)) {
++		bhv_optimize_nops(instr, a->instrlen, bhv_arg, true);
 +		return 0;
 +	}
 +
@@ -2049,23 +2578,20 @@ index 000000000..110871a1a
 +	insn_buff_sz = a->replacementlen;
 +
 +	/*
-+		* 0xe8 is a relative jump; fix the offset.
-+		*
-+		* Instruction length is checked before the opcode to avoid
-+		* accessing uninitialized bytes for zero-length replacements.
-+		*/
-+	if (a->replacementlen == 5 && *insn_buff == 0xe8)
++	 * 0xe8 is a relative jump; fix the offset.
++	 *
++	 * Instruction length is checked before the opcode to avoid
++	 * accessing uninitialized bytes for zero-length replacements.
++	 */
++	if (a->replacementlen == 5 && *insn_buff == 0xe8) {
 +		*(s32 *)(insn_buff + 1) += replacement - instr;
++	}
 +
-+	if (a->replacementlen &&
-+	    (replacement[0] == 0xeb || replacement[0] == 0xe9))
++	if (a->replacementlen && is_jmp(replacement[0]))
 +		bhv_recompute_jump(a, instr, replacement, insn_buff);
 +
-+	if (a->instrlen > a->replacementlen) {
-+		bhv_add_nops(insn_buff + a->replacementlen,
-+			     a->instrlen - a->replacementlen, NULL, false);
-+		insn_buff_sz += a->instrlen - a->replacementlen;
-+	}
++	for (; insn_buff_sz < a->instrlen; insn_buff_sz++)
++		insn_buff[insn_buff_sz] = 0x90;
 +
 +	if (insn_buff_sz >= sizeof(bhv_arg->bhv_patch_patch_arg.src_value))
 +		panic("Instruction buffer size too small!");
@@ -2076,8 +2602,12 @@ index 000000000..110871a1a
 +	       insn_buff_sz);
 +	bhv_arg->bhv_patch_patch_arg.size = insn_buff_sz;
 +
-+	return bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
-+				 BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++	rv = bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH,
++			       BHV_VAS_PATCH_OP_PATCH_NO_CLOSE, bhv_arg);
++
++	bhv_optimize_nops(instr, a->instrlen, bhv_arg, true);
++
++	return rv;
 +}
 +
 +int __bhv_text bhv_alternatives_apply_vault_arch(
@@ -2085,12 +2615,15 @@ index 000000000..110871a1a
 +{
 +	struct alt_instr *a;
 +	int rv = 0;
-+	bool *smp = arch;
 +
++#ifdef CONFIG_SMP
++	bool *smp = arch;
 +	// SMP?
 +	if (smp != NULL) {
 +		bhv_alternatives_smp_lock_unlock_vault(mod, *smp, bhv_arg);
 +	}
++#endif
++	(void)arch;
 +
 +	for (a = mod->begin; a < mod->end; a++) {
 +		if (rv == 0)
@@ -2157,7 +2690,7 @@ index 000000000..110871a1a
 +	static_mods[counter].next.next = NULL;
 +	static_mods[counter].next.prev = NULL;
 +#if defined(CONFIG_X86_64)
-+	// Init x64 VDSO
++	// Init 64 VDSO
 +	counter++;
 +	static_mods[counter].begin =
 +		(void *)(vdso_image_64.data + vdso_image_64.alt);
@@ -2174,7 +2707,7 @@ index 000000000..110871a1a
 +	static_mods[counter].next.prev = NULL;
 +#endif
 +#if defined(CONFIG_X86_32) || defined(CONFIG_COMPAT)
-+	// Init x64 VDSO
++	// Init 32 VDSO
 +	counter++;
 +	static_mods[counter].begin =
 +		(void *)(vdso_image_32.data + vdso_image_32.alt);
@@ -2191,7 +2724,7 @@ index 000000000..110871a1a
 +	static_mods[counter].next.prev = NULL;
 +#endif
 +#if defined(CONFIG_X86_X32_ABI)
-+	// Init x64 VDSO
++	// Init x32 VDSO
 +	counter++;
 +	static_mods[counter].begin =
 +		(void *)(vdso_image_x32.data + vdso_image_x32.alt);
@@ -2212,14 +2745,15 @@ index 000000000..110871a1a
 +}
 diff --git arch/x86/bhv/patch_jump_label.c arch/x86/bhv/patch_jump_label.c
 new file mode 100644
-index 000000000..47cc0b880
+index 000000000..801ba630c
 --- /dev/null
 +++ arch/x86/bhv/patch_jump_label.c
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,85 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
 + * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Tommaso Frassetto <tommaso.frassetto@bedrocksystems.com>
 + */
 +
 +#include <asm/bhv/integrity.h>
@@ -2228,33 +2762,72 @@ index 000000000..47cc0b880
 +#include <linux/jump_label.h>
 +#include <asm/text-patching.h>
 +#include <linux/string.h>
++#include <linux/version.h>
++
++static inline bool is_nop(const void *code, size_t len)
++{
++#define CHECK_NOP(nop)                                                         \
++	if (0 == memcmp(code, nop, len))                                       \
++		return true;
++
++#define DEF_CHECK_NOP(...)                                                     \
++	{                                                                      \
++		const uint8_t __nop[] = { __VA_ARGS__ };                       \
++		CHECK_NOP(__nop);                                              \
++	}
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 13, 0)
++	if (len == 5) {
++		DEF_CHECK_NOP(STATIC_KEY_INIT_NOP);
++		CHECK_NOP(ideal_nops)[NOP_ATOMIC5];
++	}
++#else // LINUX_VERSION_CODE >= 5.14
++	if (len == 2) {
++		CHECK_NOP(x86_nops[2]);
++	} else if (len == 5) {
++		CHECK_NOP(x86_nops[5]);
++	}
++#endif
++
++	return false;
++}
 +
 +bool __bhv_text bhv_jump_label_validate_opcode(struct jump_entry *entry,
 +					       enum jump_label_type type,
 +					       const void *expected_opcode,
 +					       size_t len)
 +{
-+	const unsigned char default_nop[] = { STATIC_KEY_INIT_NOP };
-+	const unsigned char *ideal_nop = ideal_nops[NOP_ATOMIC5];
 +	const void *code;
 +	const void *addr, *dest;
-+
-+	if (len != JUMP_LABEL_NOP_SIZE)
-+		return false;
 +
 +	addr = (void *)jump_entry_code(entry);
 +	dest = (void *)jump_entry_target(entry);
 +
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 13, 0)
++	if (len != 5)
++		return false;
++
 +	code = text_gen_insn(JMP32_INSN_OPCODE, addr, dest);
++
++
++#else // LINUX_VERSION_CODE >= 5.14
++	if (len != 2 && len != 5)
++		return false;
++
++	if (len == 2) {
++		code = text_gen_insn(JMP8_INSN_OPCODE, addr, dest);
++	} else if (len == 5) {
++		code = text_gen_insn(JMP32_INSN_OPCODE, addr, dest);
++	}
++#endif
 +
 +	if (type != JUMP_LABEL_JMP) {
 +		if (memcmp(addr, code, len))
 +			return false;
-+		if (memcmp(expected_opcode, ideal_nop, len))
++		if (!is_nop(expected_opcode, len))
 +			return false;
 +	} else {
-+		if (memcmp(addr, ideal_nop, len) &&
-+		    memcmp(addr, default_nop, len))
++		if (!is_nop(addr, len))
 +			return false;
 +		if (memcmp(expected_opcode, code, len))
 +			return false;
@@ -2263,10 +2836,10 @@ index 000000000..47cc0b880
 +}
 diff --git arch/x86/bhv/patch_static_call.c arch/x86/bhv/patch_static_call.c
 new file mode 100644
-index 000000000..108c52c17
+index 000000000..047e4cb9c
 --- /dev/null
 +++ arch/x86/bhv/patch_static_call.c
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,104 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -2280,6 +2853,13 @@ index 000000000..108c52c17
 +#include <bhv/vault.h>
 +#include <bhv/interface/patch.h>
 +#include <bhv/patch.h>
++
++/*
++ * cs cs cs xorl %eax, %eax - a single 5 byte instruction that clears %[er]ax
++ */
++static const u8 xor5rax[] = { 0x2e, 0x2e, 0x2e, 0x31, 0xc0 };
++
++static const u8 retinsn[] = { RET_INSN_OPCODE, 0xcc, 0xcc, 0xcc, 0xcc };
 +
 +static DEFINE_MUTEX(bhv_static_call_mutex);
 +
@@ -2295,10 +2875,11 @@ index 000000000..108c52c17
 +
 +static void __bhv_text bhv_static_call_transform_vault(void *insn,
 +						       enum insn_type type,
-+						       void *func,
++						       void *func, bool modinit,
 +						       bhv_patch_arg_t *bhv_arg)
 +{
 +	int ret;
++	const void *emulate = NULL;
 +	int size = CALL_INSN_SIZE;
 +	const void *code;
 +
@@ -2309,10 +2890,15 @@ index 000000000..108c52c17
 +	switch (type) {
 +	case CALL:
 +		code = text_gen_insn(CALL_INSN_OPCODE, insn, func);
++		if (func == &__static_call_return0) {
++			emulate = code;
++			code = &xor5rax;
++		}
++
 +		break;
 +
 +	case NOP:
-+		code = ideal_nops[NOP_ATOMIC5];
++		code = x86_nops[5];
 +		break;
 +
 +	case JMP:
@@ -2320,8 +2906,11 @@ index 000000000..108c52c17
 +		break;
 +
 +	case RET:
-+		code = text_gen_insn(RET_INSN_OPCODE, insn, func);
-+		size = RET_INSN_SIZE;
++		if (cpu_feature_enabled(X86_FEATURE_RETHUNK))
++			code = text_gen_insn(JMP32_INSN_OPCODE, insn,
++					     &__x86_return_thunk);
++		else
++			code = &retinsn;
 +		break;
 +	}
 +
@@ -2343,14 +2932,15 @@ index 000000000..108c52c17
 +	bhv_vault_close_hyp();
 +}
 +
-+void bhv_static_call_transform(void *insn, enum insn_type type, void *func)
++void bhv_static_call_transform(void *insn, enum insn_type type, void *func,
++			       bool modinit)
 +{
 +	unsigned long flags;
 +	static bhv_patch_arg_t bhv_arg;
 +
 +	bhv_static_call_lock();
 +	local_irq_save(flags);
-+	bhv_static_call_transform_vault(insn, type, func, &bhv_arg);
++	bhv_static_call_transform_vault(insn, type, func, modinit, &bhv_arg);
 +	local_irq_restore(flags);
 +	bhv_static_call_unlock();
 +}
@@ -2476,10 +3066,10 @@ index 000000000..f1213d0a8
 +#endif /* __ASM_BHV_INTEGRITY_H__ */
 diff --git arch/x86/include/asm/bhv/patch.h arch/x86/include/asm/bhv/patch.h
 new file mode 100644
-index 000000000..f3155ae91
+index 000000000..ab762fd71
 --- /dev/null
 +++ arch/x86/include/asm/bhv/patch.h
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,82 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -2529,6 +3119,13 @@ index 000000000..f3155ae91
 +struct bhv_alternatives_mod *__bhv_text
 +bhv_alternatives_get_static_mods_vault(uint32_t *nr_mods);
 +
++#if defined(CONFIG_RETPOLINE) && defined(CONFIG_STACK_VALIDATION)
++void __bhv_text bhv_apply_retpolines_vault(s32 *s, bhv_patch_arg_t *bhv_arg);
++#ifdef CONFIG_RETHUNK
++void __bhv_text bhv_apply_returns_vault(s32 *s, bhv_patch_arg_t *bhv_arg);
++#endif /* CONFIG_RETHUNK */
++#endif /* defined(CONFIG_RETPOLINE) && defined(CONFIG_STACK_VALIDATION) */
++
 +#ifdef CONFIG_PARAVIRT
 +void __bhv_text bhv_apply_paravirt_vault(struct paravirt_patch_site *p,
 +					 bhv_patch_arg_t *bhv_arg);
@@ -2541,7 +3138,8 @@ index 000000000..f3155ae91
 +	RET = 3, /* tramp / site cond-tail-call */
 +};
 +
-+void bhv_static_call_transform(void *insn, enum insn_type type, void *func);
++void bhv_static_call_transform(void *insn, enum insn_type type, void *func,
++			       bool modinit);
 +
 +#else
 +static inline void bhv_alternatives_add_module_arch(struct alt_instr *begin,
@@ -2576,12 +3174,12 @@ index e41cbf2ec..591e48b05 100644
  extern bool nopv;
  extern enum x86_hypervisor_type x86_hyper_type;
 diff --git arch/x86/kernel/alternative.c arch/x86/kernel/alternative.c
-index 2400ad62f..516c97b3b 100644
+index 43dd7f281..96505e444 100644
 --- arch/x86/kernel/alternative.c
 +++ arch/x86/kernel/alternative.c
-@@ -29,6 +29,9 @@
- #include <asm/io.h>
- #include <asm/fixmap.h>
+@@ -31,6 +31,9 @@
+ #include <asm/paravirt.h>
+ #include <asm/asm-prototypes.h>
  
 +#include <asm/bhv/patch.h>
 +#include <bhv/integrity.h>
@@ -2589,7 +3187,7 @@ index 2400ad62f..516c97b3b 100644
  int __read_mostly alternatives_patched;
  
  EXPORT_SYMBOL_GPL(alternatives_patched);
-@@ -376,6 +379,13 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
+@@ -268,6 +271,13 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
  	u8 *instr, *replacement;
  	u8 insn_buff[MAX_PATCH_LEN];
  
@@ -2603,7 +3201,37 @@ index 2400ad62f..516c97b3b 100644
  	DPRINTK("alt table %px, -> %px", start, end);
  	/*
  	 * The scan order should be from start to end. A later scanned
-@@ -471,7 +481,6 @@ static void alternatives_smp_unlock(const s32 *start, const s32 *end,
+@@ -465,6 +475,14 @@ void __init_or_module noinline apply_retpolines(s32 *start, s32 *end)
+ {
+ 	s32 *s;
+ 
++#ifdef CONFIG_BHV_VAS
++	if (bhv_integrity_is_enabled()) {
++		for (s = start; s < end; s++)
++			bhv_apply_retpolines(s);
++		return;
++	}
++#endif /* CONFIG_BHV_VAS */
++
+ 	for (s = start; s < end; s++) {
+ 		void *addr = (void *)s + *s;
+ 		struct insn insn;
+@@ -538,6 +556,14 @@ void __init_or_module noinline apply_returns(s32 *start, s32 *end)
+ {
+ 	s32 *s;
+ 
++#ifdef CONFIG_BHV_VAS
++	if (bhv_integrity_is_enabled()) {
++		for (s = start; s < end; s++)
++			bhv_apply_returns(s);
++		return;
++	}
++#endif /* CONFIG_BHV_VAS */
++
+ 	for (s = start; s < end; s++) {
+ 		void *dest = NULL, *addr = (void *)s + *s;
+ 		struct insn insn;
+@@ -614,7 +640,6 @@ static void alternatives_smp_unlock(const s32 *start, const s32 *end,
  			text_poke(ptr, ((unsigned char []){0x3E}), 1);
  	}
  }
@@ -2611,7 +3239,7 @@ index 2400ad62f..516c97b3b 100644
  struct smp_alt_module {
  	/* what is this ??? */
  	struct module	*mod;
-@@ -497,6 +506,11 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
+@@ -640,6 +665,11 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
  {
  	struct smp_alt_module *smp;
  
@@ -2623,7 +3251,7 @@ index 2400ad62f..516c97b3b 100644
  	mutex_lock(&text_mutex);
  	if (!uniproc_patched)
  		goto unlock;
-@@ -522,7 +536,25 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
+@@ -665,7 +695,25 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
  
  	list_add_tail(&smp->next, &smp_alt_modules);
  smp_unlock:
@@ -2649,7 +3277,7 @@ index 2400ad62f..516c97b3b 100644
  unlock:
  	mutex_unlock(&text_mutex);
  }
-@@ -556,9 +588,26 @@ void alternatives_enable_smp(void)
+@@ -699,9 +747,26 @@ void alternatives_enable_smp(void)
  		BUG_ON(num_online_cpus() != 1);
  		clear_cpu_cap(&boot_cpu_data, X86_FEATURE_UP);
  		clear_cpu_cap(&cpu_data(0), X86_FEATURE_UP);
@@ -2677,7 +3305,7 @@ index 2400ad62f..516c97b3b 100644
  		uniproc_patched = false;
  	}
  	mutex_unlock(&text_mutex);
-@@ -599,6 +648,14 @@ void __init_or_module apply_paravirt(struct paravirt_patch_site *start,
+@@ -742,6 +807,14 @@ void __init_or_module apply_paravirt(struct paravirt_patch_site *start,
  	struct paravirt_patch_site *p;
  	char insn_buff[MAX_PATCH_LEN];
  
@@ -2707,7 +3335,7 @@ index 553bfbfc3..20bfa373b 100644
  
  enum x86_hypervisor_type x86_hyper_type;
 diff --git arch/x86/kernel/idt.c arch/x86/kernel/idt.c
-index ee1a283f8..93615b106 100644
+index df0fa695b..5ca9afe7d 100644
 --- arch/x86/kernel/idt.c
 +++ arch/x86/kernel/idt.c
 @@ -10,6 +10,7 @@
@@ -2718,7 +3346,7 @@ index ee1a283f8..93615b106 100644
  
  #define DPL0		0x0
  #define DPL3		0x3
-@@ -310,6 +311,8 @@ void __init idt_setup_apic_and_irq_gates(void)
+@@ -294,6 +295,8 @@ void __init idt_setup_apic_and_irq_gates(void)
  	/* Make the IDT table read only */
  	set_memory_ro((unsigned long)&idt_table, 1);
  
@@ -2728,64 +3356,66 @@ index ee1a283f8..93615b106 100644
  }
  
 diff --git arch/x86/kernel/jump_label.c arch/x86/kernel/jump_label.c
-index 5ba8477c2..03ef91a49 100644
+index 68f091ba8..c20797ea8 100644
 --- arch/x86/kernel/jump_label.c
 +++ arch/x86/kernel/jump_label.c
-@@ -15,6 +15,9 @@
- #include <asm/kprobes.h>
+@@ -16,6 +16,9 @@
  #include <asm/alternative.h>
  #include <asm/text-patching.h>
+ #include <asm/insn.h>
 +#include <bhv/bhv.h>
 +#include <bhv/patch.h>
 +#include <bhv/integrity.h>
  
- static void bug_at(const void *ip, int line)
+ int arch_jump_entry_size(struct jump_entry *entry)
  {
-@@ -58,9 +61,30 @@ __jump_label_set_jump_code(struct jump_entry *entry, enum jump_label_type type,
- 	return code;
+@@ -79,10 +82,30 @@ __jump_label_patch(struct jump_entry *entry, enum jump_label_type type)
+ 	return (struct jump_label_patch){.code = code, .size = size};
  }
  
+-static __always_inline void
+-__jump_label_transform(struct jump_entry *entry,
+-		       enum jump_label_type type,
+-		       int init)
 +#ifdef CONFIG_BHV_VAS
 +static void __orig_jump_label_transform(struct jump_entry *entry,
 +					enum jump_label_type type, int init);
 +
- static inline void __jump_label_transform(struct jump_entry *entry,
- 					  enum jump_label_type type,
- 					  int init)
++static __always_inline void __jump_label_transform(struct jump_entry *entry,
++					  enum jump_label_type type,
++					  int init)
 +{
 +	if (bhv_integrity_is_enabled()) {
-+		const void *opcode =
-+			__jump_label_set_jump_code(entry, type, init);
-+		bhv_patch_jump_label(entry, opcode, JUMP_LABEL_NOP_SIZE);
++		const struct jump_label_patch jlp =
++			__jump_label_patch(entry, type);
++		bhv_patch_jump_label(entry, jlp.code, jlp.size);
 +	} else {
 +		__orig_jump_label_transform(entry, type, init);
 +	}
 +}
 +
-+static inline void __orig_jump_label_transform(struct jump_entry *entry,
++static __always_inline void __orig_jump_label_transform(struct jump_entry *entry,
 +					       enum jump_label_type type,
 +					       int init)
 +#else /* CONFIG_BHV_VAS */
-+static inline void __jump_label_transform(struct jump_entry *entry,
++static __always_inline void __jump_label_transform(struct jump_entry *entry,
 +					  enum jump_label_type type, int init)
 +#endif /* CONFIG_BHV_VAS */
  {
- 	const void *opcode = __jump_label_set_jump_code(entry, type, init);
+ 	const struct jump_label_patch jlp = __jump_label_patch(entry, type);
  
-@@ -114,18 +138,38 @@ bool arch_jump_label_transform_queue(struct jump_entry *entry,
+@@ -135,17 +158,36 @@ bool arch_jump_label_transform_queue(struct jump_entry *entry,
  
  	mutex_lock(&text_mutex);
- 	opcode = __jump_label_set_jump_code(entry, type, 0);
+ 	jlp = __jump_label_patch(entry, type);
 +#ifdef CONFIG_BHV_VAS
 +	if (bhv_integrity_is_enabled())
-+		bhv_patch_jump_label(entry, opcode, JUMP_LABEL_NOP_SIZE);
++		bhv_patch_jump_label(entry, jlp.code, jlp.size);
 +	else {
-+		text_poke_queue((void *)jump_entry_code(entry), opcode,
-+				JUMP_LABEL_NOP_SIZE, NULL);
++		text_poke_queue((void *)jump_entry_code(entry), jlp.code, jlp.size, NULL);
 +	}
 +#else
- 	text_poke_queue((void *)jump_entry_code(entry),
- 			opcode, JUMP_LABEL_NOP_SIZE, NULL);
+ 	text_poke_queue((void *)jump_entry_code(entry), jlp.code, jlp.size, NULL);
 +#endif
  	mutex_unlock(&text_mutex);
  	return true;
@@ -2812,7 +3442,7 @@ index 5ba8477c2..03ef91a49 100644
  static enum {
  	JL_STATE_START,
 diff --git arch/x86/kernel/module.c arch/x86/kernel/module.c
-index 5e9a34b5b..9b6a4cedd 100644
+index 06b53ea94..8d0de0b6e 100644
 --- arch/x86/kernel/module.c
 +++ arch/x86/kernel/module.c
 @@ -25,6 +25,9 @@
@@ -2825,8 +3455,8 @@ index 5e9a34b5b..9b6a4cedd 100644
  #if 0
  #define DEBUGP(fmt, ...)				\
  	printk(KERN_DEBUG fmt, ##__VA_ARGS__)
-@@ -254,6 +257,12 @@ int module_finalize(const Elf_Ehdr *hdr,
- 		*para = NULL, *orc = NULL, *orc_ip = NULL;
+@@ -256,6 +259,12 @@ int module_finalize(const Elf_Ehdr *hdr,
+ 		*retpolines = NULL, *returns = NULL;
  	char *secstrings = (void *)hdr + sechdrs[hdr->e_shstrndx].sh_offset;
  
 +#ifdef CONFIG_BHV_VAS
@@ -2838,10 +3468,11 @@ index 5e9a34b5b..9b6a4cedd 100644
  	for (s = sechdrs; s < sechdrs + hdr->e_shnum; s++) {
  		if (!strcmp(".text", secstrings + s->sh_name))
  			text = s;
-@@ -269,9 +278,28 @@ int module_finalize(const Elf_Ehdr *hdr,
- 			orc_ip = s;
+@@ -291,9 +300,29 @@ int module_finalize(const Elf_Ehdr *hdr,
+ 		void *rseg = (void *)returns->sh_addr;
+ 		apply_returns(rseg, rseg + returns->sh_size);
  	}
- 
++
 +#ifdef CONFIG_BHV_VAS
 +	if (alt) {
 +		alt_start = (void *)alt->sh_addr;
@@ -2868,10 +3499,10 @@ index 5e9a34b5b..9b6a4cedd 100644
  	}
  	if (locks && text) {
 diff --git arch/x86/kernel/static_call.c arch/x86/kernel/static_call.c
-index ca9a380d9..5cfc43a2a 100644
+index 2fc4f9670..b3335abca 100644
 --- arch/x86/kernel/static_call.c
 +++ arch/x86/kernel/static_call.c
-@@ -4,18 +4,30 @@
+@@ -4,12 +4,17 @@
  #include <linux/bug.h>
  #include <asm/text-patching.h>
  
@@ -2887,14 +3518,15 @@ index ca9a380d9..5cfc43a2a 100644
  };
 +#endif
  
- static void __ref __static_call_transform(void *insn, enum insn_type type, void *func)
- {
+ /*
+  * ud1 %esp, %ecx - a 3 byte #UD that is unique to trampolines, chosen such
+@@ -32,6 +37,13 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
  	int size = CALL_INSN_SIZE;
  	const void *code;
  
 +#ifdef CONFIG_BHV_VAS
 +	if (bhv_integrity_is_enabled()) {
-+		bhv_static_call_transform(insn, type, func);
++		bhv_static_call_transform(insn, type, func, modinit);
 +		return;
 +	}
 +#endif /* CONFIG_BHV_VAS */
@@ -2903,7 +3535,7 @@ index ca9a380d9..5cfc43a2a 100644
  	case CALL:
  		code = text_gen_insn(CALL_INSN_OPCODE, insn, func);
 diff --git arch/x86/kernel/vmlinux.lds.S arch/x86/kernel/vmlinux.lds.S
-index bf9e0adb5..eee03c4ab 100644
+index c1efcd194..00f604fd9 100644
 --- arch/x86/kernel/vmlinux.lds.S
 +++ arch/x86/kernel/vmlinux.lds.S
 @@ -137,6 +137,7 @@ SECTIONS
@@ -2914,7 +3546,7 @@ index bf9e0adb5..eee03c4ab 100644
  		*(.fixup)
  		*(.gnu.warning)
  
-@@ -312,15 +313,29 @@ SECTIONS
+@@ -333,15 +334,29 @@ SECTIONS
  		__apicdrivers_end = .;
  	}
  
@@ -2944,7 +3576,7 @@ index bf9e0adb5..eee03c4ab 100644
  	.exit.data : AT(ADDR(.exit.data) - LOAD_OFFSET) {
  		EXIT_DATA
  	}
-@@ -354,6 +369,17 @@ SECTIONS
+@@ -375,6 +390,17 @@ SECTIONS
  	}
  #endif
  
@@ -2963,7 +3595,7 @@ index bf9e0adb5..eee03c4ab 100644
  	. = ALIGN(PAGE_SIZE);
  	.bss : AT(ADDR(.bss) - LOAD_OFFSET) {
 diff --git arch/x86/mm/init.c arch/x86/mm/init.c
-index c7a476035..be0b8e625 100644
+index 0e3667e52..fe936f129 100644
 --- arch/x86/mm/init.c
 +++ arch/x86/mm/init.c
 @@ -36,6 +36,9 @@
@@ -2976,7 +3608,7 @@ index c7a476035..be0b8e625 100644
  /*
   * Tables translating between page_cache_type_t and pte encoding.
   *
-@@ -919,6 +922,8 @@ void __ref free_initmem(void)
+@@ -947,6 +950,8 @@ void __ref free_initmem(void)
  
  	mem_encrypt_free_decrypted_mem();
  
@@ -2986,7 +3618,7 @@ index c7a476035..be0b8e625 100644
  				&__init_begin, &__init_end);
  }
 diff --git include/asm-generic/sections.h include/asm-generic/sections.h
-index d16302d3e..b7194520f 100644
+index 72f1e2a8c..5201954a9 100644
 --- include/asm-generic/sections.h
 +++ include/asm-generic/sections.h
 @@ -58,6 +58,14 @@ extern char __noinstr_text_start[], __noinstr_text_end[];
@@ -3005,10 +3637,10 @@ index d16302d3e..b7194520f 100644
  #ifndef dereference_function_descriptor
  #define dereference_function_descriptor(p) ((void *)(p))
 diff --git include/asm-generic/vmlinux.lds.h include/asm-generic/vmlinux.lds.h
-index a774361f2..4b1e92cdc 100644
+index 9eac202fb..35d9b4585 100644
 --- include/asm-generic/vmlinux.lds.h
 +++ include/asm-generic/vmlinux.lds.h
-@@ -656,6 +656,17 @@
+@@ -641,6 +641,17 @@
  		*(.static_call.text)					\
  		__static_call_text_end = .;
  
@@ -3086,7 +3718,7 @@ index 000000000..9f507a87a
 \ No newline at end of file
 diff --git include/bhv/bhv.h include/bhv/bhv.h
 new file mode 100644
-index 000000000..94f2e4f47
+index 000000000..c5f401918
 --- /dev/null
 +++ include/bhv/bhv.h
 @@ -0,0 +1,74 @@
@@ -3105,8 +3737,8 @@ index 000000000..94f2e4f47
 +#include <asm/bug.h>
 +#include <asm/io.h>
 +
-+#define __bhv_text __section(".bhv.text") noinline
 +#define __bhv_data __section(".bhv.data") noinline
++#define __bhv_text __section(".bhv.text") noinline
 +
 +#ifdef CONFIG_BHV_PANIC_ON_FAIL
 +#define bhv_fail(fmt, ...) panic(fmt, ##__VA_ARGS__)
@@ -4456,10 +5088,10 @@ index 000000000..6a099f891
 +#endif /* __BHV_MODULE_H__ */
 diff --git include/bhv/patch.h include/bhv/patch.h
 new file mode 100644
-index 000000000..1ee935221
+index 000000000..e3c46f30d
 --- /dev/null
 +++ include/bhv/patch.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,89 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -4509,6 +5141,13 @@ index 000000000..1ee935221
 +void bhv_alternatives_add_module(struct alt_instr *begin, struct alt_instr *end,
 +				 struct bhv_alternatives_mod_arch *arch);
 +void bhv_alternatives_delete_after_init(void);
++
++#if defined(CONFIG_RETPOLINE) && defined(CONFIG_STACK_VALIDATION)
++void __init_or_module bhv_apply_retpolines(s32 *s);
++#ifdef CONFIG_RETHUNK
++void __init_or_module bhv_apply_returns(s32 *s);
++#endif /* CONFIG_RETHUNK */
++#endif /* defined(CONFIG_RETPOLINE) && defined(CONFIG_STACK_VALIDATION) */
 +
 +#ifdef CONFIG_PARAVIRT
 +void __init_or_module bhv_apply_paravirt(struct paravirt_patch_site *p);
@@ -4626,10 +5265,10 @@ index 000000000..902647976
 +
 +#endif /* __BHV_VAULT_H__ */
 diff --git include/linux/filter.h include/linux/filter.h
-index 822b701c8..c41d12d0b 100644
+index a9956b681..e5c9dc057 100644
 --- include/linux/filter.h
 +++ include/linux/filter.h
-@@ -29,6 +29,8 @@
+@@ -28,6 +28,8 @@
  #include <uapi/linux/filter.h>
  #include <uapi/linux/bpf.h>
  
@@ -4638,7 +5277,7 @@ index 822b701c8..c41d12d0b 100644
  struct sk_buff;
  struct sock;
  struct seccomp_data;
-@@ -829,6 +831,7 @@ static inline void bpf_prog_lock_ro(struct bpf_prog *fp)
+@@ -878,6 +880,7 @@ static inline void bpf_prog_lock_ro(struct bpf_prog *fp)
  	if (!fp->jited) {
  		set_vm_flush_reset_perms(fp);
  		set_memory_ro((unsigned long)fp, fp->pages);
@@ -4646,7 +5285,7 @@ index 822b701c8..c41d12d0b 100644
  	}
  #endif
  }
-@@ -838,6 +841,7 @@ static inline void bpf_jit_binary_lock_ro(struct bpf_binary_header *hdr)
+@@ -887,6 +890,7 @@ static inline void bpf_jit_binary_lock_ro(struct bpf_binary_header *hdr)
  	set_vm_flush_reset_perms(hdr);
  	set_memory_ro((unsigned long)hdr, hdr->pages);
  	set_memory_x((unsigned long)hdr, hdr->pages);
@@ -4654,7 +5293,7 @@ index 822b701c8..c41d12d0b 100644
  }
  
  static inline struct bpf_binary_header *
-@@ -875,6 +879,9 @@ void __bpf_prog_free(struct bpf_prog *fp);
+@@ -923,6 +927,9 @@ void __bpf_prog_free(struct bpf_prog *fp);
  
  static inline void bpf_prog_unlock_free(struct bpf_prog *fp)
  {
@@ -4681,10 +5320,10 @@ index 68f69362d..36934d810 100644
   * usually useless though. */
  extern __printf(2, 3)
 diff --git init/main.c init/main.c
-index dd26a42e8..1118ef396 100644
+index 649d9e420..c398cc259 100644
 --- init/main.c
 +++ init/main.c
-@@ -110,6 +110,9 @@
+@@ -114,6 +114,9 @@
  
  #include <kunit/test.h>
  
@@ -4694,7 +5333,7 @@ index dd26a42e8..1118ef396 100644
  static int kernel_init(void *);
  
  extern void init_IRQ(void);
-@@ -838,6 +841,8 @@ static void __init mm_init(void)
+@@ -859,6 +862,8 @@ static void __init mm_init(void)
  	init_espfix_bsp();
  	/* Should be run after espfix64 is set up. */
  	pti_init();
@@ -4702,12 +5341,12 @@ index dd26a42e8..1118ef396 100644
 +	bhv_mm_init();
  }
  
- void __init __weak arch_call_rest_init(void)
+ #ifdef CONFIG_HAVE_ARCH_RANDOMIZE_KSTACK_OFFSET
 diff --git kernel/Makefile kernel/Makefile
-index e7905bdf6..4c4454e88 100644
+index 0e119c52a..f14bd7e49 100644
 --- kernel/Makefile
 +++ kernel/Makefile
-@@ -47,6 +47,7 @@ obj-y += rcu/
+@@ -53,6 +53,7 @@ obj-y += rcu/
  obj-y += livepatch/
  obj-y += dma/
  obj-y += entry/
@@ -5963,10 +6602,10 @@ index 000000000..d6b24d927
 \ No newline at end of file
 diff --git kernel/bhv/guestlog.c kernel/bhv/guestlog.c
 new file mode 100644
-index 000000000..760a74abc
+index 000000000..3d661a465
 --- /dev/null
 +++ kernel/bhv/guestlog.c
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,150 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -5995,7 +6634,8 @@ index 000000000..760a74abc
 +
 +	// format string and set vector
 +	va_start(args, fmt);
-+	len = vscnprintf(msg.str.buf, BHV_GUESTLOG_MAX_MSG_DATA_SZ, fmt, args);
++	len = 1 /* null terminator */ +
++	      vscnprintf(msg.str.buf, BHV_GUESTLOG_MAX_MSG_DATA_SZ, fmt, args);
 +	va_end(args);
 +
 +	sz = bhv_guestlog_calc_msg_sz(BHV_GUESTLOG_MSG_TYPE_STR, len);
@@ -6794,10 +7434,10 @@ index 000000000..0288d3fb4
 +}
 diff --git kernel/bhv/patch_alternative.c kernel/bhv/patch_alternative.c
 new file mode 100644
-index 000000000..a15a7899f
+index 000000000..3942c365b
 --- /dev/null
 +++ kernel/bhv/patch_alternative.c
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,225 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -6980,6 +7620,34 @@ index 000000000..a15a7899f
 +	return rv;
 +}
 +
++#if defined(CONFIG_RETPOLINE) && defined(CONFIG_STACK_VALIDATION)
++
++void __init_or_module bhv_apply_retpolines(s32 *s)
++{
++	unsigned long flags;
++	static bhv_patch_arg_t bhv_arg;
++
++	bhv_alternatives_lock();
++	local_irq_save(flags);
++	bhv_apply_retpolines_vault(s, &bhv_arg);
++	local_irq_restore(flags);
++	bhv_alternatives_unlock();
++}
++
++#ifdef CONFIG_RETHUNK
++void __init_or_module bhv_apply_returns(s32 *s)
++{
++	unsigned long flags;
++	static bhv_patch_arg_t bhv_arg;
++
++	bhv_alternatives_lock();
++	local_irq_save(flags);
++	bhv_apply_returns_vault(s, &bhv_arg);
++	local_irq_restore(flags);
++	bhv_alternatives_unlock();
++}
++#endif /* CONFIG_RETHUNK */
++
 +#ifdef CONFIG_PARAVIRT
 +void __init_or_module bhv_apply_paravirt(struct paravirt_patch_site *p)
 +{
@@ -6993,6 +7661,8 @@ index 000000000..a15a7899f
 +	bhv_alternatives_unlock();
 +}
 +#endif /* CONFIG_PARAVIRT */
++
++#endif /* defined(CONFIG_RETPOLINE) && defined(CONFIG_STACK_VALIDATION) */
 diff --git kernel/bhv/patch_jump_label.c kernel/bhv/patch_jump_label.c
 new file mode 100644
 index 000000000..d057a00b3
@@ -7372,10 +8042,10 @@ index 000000000..4332461c1
 +	do_start();
 +}
 diff --git kernel/bpf/bpf_struct_ops.c kernel/bpf/bpf_struct_ops.c
-index ac283f9b2..4afe69e3c 100644
+index 9abcc33f0..07196b9c0 100644
 --- kernel/bpf/bpf_struct_ops.c
 +++ kernel/bpf/bpf_struct_ops.c
-@@ -452,6 +452,7 @@ static int bpf_struct_ops_map_update_elem(struct bpf_map *map, void *key,
+@@ -453,6 +453,7 @@ static int bpf_struct_ops_map_update_elem(struct bpf_map *map, void *key,
  
  	set_memory_ro((long)st_map->image, 1);
  	set_memory_x((long)st_map->image, 1);
@@ -7383,7 +8053,7 @@ index ac283f9b2..4afe69e3c 100644
  	err = st_ops->reg(kdata);
  	if (likely(!err)) {
  		/* Pair with smp_load_acquire() during lookup_elem().
-@@ -470,6 +471,7 @@ static int bpf_struct_ops_map_update_elem(struct bpf_map *map, void *key,
+@@ -471,6 +472,7 @@ static int bpf_struct_ops_map_update_elem(struct bpf_map *map, void *key,
  	 */
  	set_memory_nx((long)st_map->image, 1);
  	set_memory_rw((long)st_map->image, 1);
@@ -7392,10 +8062,10 @@ index ac283f9b2..4afe69e3c 100644
  
  reset_unlock:
 diff --git kernel/bpf/core.c kernel/bpf/core.c
-index 72e4bf0ee..17d266c4f 100644
+index 4ce500eac..de8d0cf3f 100644
 --- kernel/bpf/core.c
 +++ kernel/bpf/core.c
-@@ -899,6 +899,12 @@ void bpf_jit_binary_free(struct bpf_binary_header *hdr)
+@@ -906,6 +906,12 @@ void bpf_jit_binary_free(struct bpf_binary_header *hdr)
  {
  	u32 pages = hdr->pages;
  
@@ -7409,10 +8079,10 @@ index 72e4bf0ee..17d266c4f 100644
  	bpf_jit_uncharge_modmem(pages);
  }
 diff --git kernel/bpf/trampoline.c kernel/bpf/trampoline.c
-index 986dabc3d..a8ddc45aa 100644
+index 4fa75791b..fbaddcc83 100644
 --- kernel/bpf/trampoline.c
 +++ kernel/bpf/trampoline.c
-@@ -38,6 +38,11 @@ void *bpf_jit_alloc_exec_page(void)
+@@ -39,6 +39,11 @@ void *bpf_jit_alloc_exec_page(void)
  	 * everytime new program is attached or detached.
  	 */
  	set_memory_x((long)image, 1);
@@ -7424,7 +8094,7 @@ index 986dabc3d..a8ddc45aa 100644
  	return image;
  }
  
-@@ -171,6 +176,7 @@ static void __bpf_tramp_image_put_deferred(struct work_struct *work)
+@@ -203,6 +208,7 @@ static void __bpf_tramp_image_put_deferred(struct work_struct *work)
  
  	im = container_of(work, struct bpf_tramp_image, work);
  	bpf_image_ksym_del(&im->ksym);
@@ -7432,7 +8102,7 @@ index 986dabc3d..a8ddc45aa 100644
  	bpf_jit_free_exec(im->image);
  	bpf_jit_uncharge_modmem(1);
  	percpu_ref_exit(&im->pcref);
-@@ -289,6 +295,7 @@ static struct bpf_tramp_image *bpf_tramp_image_alloc(u64 key, u32 idx)
+@@ -321,6 +327,7 @@ static struct bpf_tramp_image *bpf_tramp_image_alloc(u64 key, u32 idx)
  	return im;
  
  out_free_image:
@@ -7441,7 +8111,7 @@ index 986dabc3d..a8ddc45aa 100644
  out_uncharge:
  	bpf_jit_uncharge_modmem(1);
 diff --git kernel/cred.c kernel/cred.c
-index 421b1149c..99e3e52db 100644
+index 933155c96..d3747cfb4 100644
 --- kernel/cred.c
 +++ kernel/cred.c
 @@ -17,6 +17,8 @@
@@ -7453,7 +8123,7 @@ index 421b1149c..99e3e52db 100644
  #if 0
  #define kdebug(FMT, ...)						\
  	printk("[%-5.5s%5u] " FMT "\n",					\
-@@ -112,6 +114,7 @@ static void put_cred_rcu(struct rcu_head *rcu)
+@@ -113,6 +115,7 @@ static void put_cred_rcu(struct rcu_head *rcu)
  #endif
  
  	security_cred_free(cred);
@@ -7461,7 +8131,7 @@ index 421b1149c..99e3e52db 100644
  	key_put(cred->session_keyring);
  	key_put(cred->process_keyring);
  	key_put(cred->thread_keyring);
-@@ -451,6 +454,8 @@ int commit_creds(struct cred *new)
+@@ -461,6 +464,8 @@ int commit_creds(struct cred *new)
  #endif
  	BUG_ON(atomic_read(&new->usage) < 1);
  
@@ -7470,7 +8140,7 @@ index 421b1149c..99e3e52db 100644
  	get_cred(new); /* we will require a ref for the subj creds too */
  
  	/* dumpability changes */
-@@ -690,6 +695,11 @@ struct cred *prepare_kernel_cred(struct task_struct *daemon)
+@@ -720,6 +725,11 @@ struct cred *prepare_kernel_cred(struct task_struct *daemon)
  
  	kdebug("prepare_kernel_cred() alloc %p", new);
  
@@ -7483,19 +8153,19 @@ index 421b1149c..99e3e52db 100644
  		old = get_task_cred(daemon);
  	else
 diff --git kernel/fork.c kernel/fork.c
-index 3f96400a0..ba2b7434a 100644
+index 908ba3c93..677d347e2 100644
 --- kernel/fork.c
 +++ kernel/fork.c
-@@ -97,6 +97,8 @@
- #include <linux/scs.h>
+@@ -98,6 +98,8 @@
  #include <linux/io_uring.h>
+ #include <linux/bpf.h>
  
 +#include <bhv/creds.h>
 +
  #include <asm/pgalloc.h>
  #include <linux/uaccess.h>
  #include <asm/mmu_context.h>
-@@ -2087,9 +2089,12 @@ static __latent_entropy struct task_struct *copy_process(
+@@ -2177,9 +2179,12 @@ static __latent_entropy struct task_struct *copy_process(
  	retval = security_task_alloc(p, clone_flags);
  	if (retval)
  		goto bad_fork_cleanup_audit;
@@ -7509,7 +8179,7 @@ index 3f96400a0..ba2b7434a 100644
  	retval = copy_files(clone_flags, p);
  	if (retval)
  		goto bad_fork_cleanup_semundo;
-@@ -2356,6 +2361,7 @@ static __latent_entropy struct task_struct *copy_process(
+@@ -2464,6 +2469,7 @@ static __latent_entropy struct task_struct *copy_process(
  	exit_files(p); /* blocking */
  bad_fork_cleanup_semundo:
  	exit_sem(p);
@@ -7518,7 +8188,7 @@ index 3f96400a0..ba2b7434a 100644
  	security_task_free(p);
  bad_fork_cleanup_audit:
 diff --git kernel/jump_label.c kernel/jump_label.c
-index 4ae693ce7..37ae60aa8 100644
+index b156e152d..84c2d165c 100644
 --- kernel/jump_label.c
 +++ kernel/jump_label.c
 @@ -19,6 +19,8 @@
@@ -7530,7 +8200,7 @@ index 4ae693ce7..37ae60aa8 100644
  /* mutex to protect coming/going of the jump_label table */
  static DEFINE_MUTEX(jump_label_mutex);
  
-@@ -678,7 +680,7 @@ static int jump_label_add_module(struct module *mod)
+@@ -680,7 +682,7 @@ static int jump_label_add_module(struct module *mod)
  			__jump_label_update(key, iter, iter_stop, true);
  	}
  
@@ -7539,7 +8209,7 @@ index 4ae693ce7..37ae60aa8 100644
  }
  
  static void jump_label_del_module(struct module *mod)
-@@ -689,6 +691,8 @@ static void jump_label_del_module(struct module *mod)
+@@ -691,6 +693,8 @@ static void jump_label_del_module(struct module *mod)
  	struct static_key *key = NULL;
  	struct static_key_mod *jlm, **prev;
  
@@ -7549,7 +8219,7 @@ index 4ae693ce7..37ae60aa8 100644
  		if (jump_entry_key(iter) == key)
  			continue;
 diff --git kernel/kmod.c kernel/kmod.c
-index 3cd075ce2..d415157de 100644
+index b717134eb..ad1559fb6 100644
 --- kernel/kmod.c
 +++ kernel/kmod.c
 @@ -58,7 +58,11 @@ static DECLARE_WAIT_QUEUE_HEAD(kmod_wq);
@@ -7557,9 +8227,9 @@ index 3cd075ce2..d415157de 100644
  	modprobe_path is set via /proc/sys.
  */
 +#ifdef CONFIG_BHV_CONST_MODPROBE_PATH
-+const char modprobe_path[KMOD_PATH_LEN] = "/sbin/modprobe";
++const char modprobe_path[KMOD_PATH_LEN] = CONFIG_MODPROBE_PATH;
 +#else
- char modprobe_path[KMOD_PATH_LEN] = "/sbin/modprobe";
+ char modprobe_path[KMOD_PATH_LEN] = CONFIG_MODPROBE_PATH;
 +#endif
  
  static void free_modprobe_argv(struct subprocess_info *info)
@@ -7574,7 +8244,7 @@ index 3cd075ce2..d415157de 100644
  	argv[2] = "--";
  	argv[3] = module_name;	/* check free_modprobe_argv() */
 diff --git kernel/module.c kernel/module.c
-index 185b2655b..2eed4c076 100644
+index ef79f4dbd..3755954ff 100644
 --- kernel/module.c
 +++ kernel/module.c
 @@ -60,6 +60,8 @@
@@ -7586,7 +8256,7 @@ index 185b2655b..2eed4c076 100644
  #define CREATE_TRACE_POINTS
  #include <trace/events/module.h>
  
-@@ -273,6 +275,14 @@ static void module_assert_mutex_or_preempt(void)
+@@ -268,6 +270,14 @@ static void module_assert_mutex_or_preempt(void)
  }
  
  #ifdef CONFIG_MODULE_SIG
@@ -7601,7 +8271,7 @@ index 185b2655b..2eed4c076 100644
  static bool sig_enforce = IS_ENABLED(CONFIG_MODULE_SIG_FORCE);
  module_param(sig_enforce, bool_enable_only, 0644);
  
-@@ -280,6 +290,7 @@ void set_module_sig_enforced(void)
+@@ -275,6 +285,7 @@ void set_module_sig_enforced(void)
  {
  	sig_enforce = true;
  }
@@ -7609,16 +8279,16 @@ index 185b2655b..2eed4c076 100644
  #else
  #define sig_enforce false
  #endif
-@@ -2252,6 +2263,8 @@ static void free_module(struct module *mod)
- 	synchronize_rcu();
- 	mutex_unlock(&module_mutex);
+@@ -2198,6 +2209,8 @@ static void free_module(struct module *mod)
+ 	/* Clean up CFI for the module. */
+ 	cfi_cleanup(mod);
  
 +	bhv_module_unload(mod);
 +
  	/* This may be empty, but that's OK */
  	module_arch_freeing_init(mod);
  	module_memfree(mod->init_layout.base);
-@@ -3618,6 +3631,7 @@ static void module_deallocate(struct module *mod, struct load_info *info)
+@@ -3626,6 +3639,7 @@ static void module_deallocate(struct module *mod, struct load_info *info)
  	module_arch_freeing_init(mod);
  	module_memfree(mod->init_layout.base);
  	module_memfree(mod->core_layout.base);
@@ -7626,7 +8296,7 @@ index 185b2655b..2eed4c076 100644
  }
  
  int __weak module_finalize(const Elf_Ehdr *hdr,
-@@ -3776,6 +3790,7 @@ static noinline int do_init_module(struct module *mod)
+@@ -3769,6 +3783,7 @@ static noinline int do_init_module(struct module *mod)
  	module_enable_ro(mod, true);
  	mod_tree_remove_init(mod);
  	module_arch_freeing_init(mod);
@@ -7634,7 +8304,7 @@ index 185b2655b..2eed4c076 100644
  	mod->init_layout.base = NULL;
  	mod->init_layout.size = 0;
  	mod->init_layout.ro_size = 0;
-@@ -4075,6 +4090,8 @@ static int load_module(struct load_info *info, const char __user *uargs,
+@@ -4082,6 +4097,8 @@ static int load_module(struct load_info *info, const char __user *uargs,
  	if (err)
  		goto ddebug_cleanup;
  
@@ -7644,10 +8314,10 @@ index 185b2655b..2eed4c076 100644
  	if (err)
  		goto bug_cleanup;
 diff --git kernel/sysctl.c kernel/sysctl.c
-index b9306d2bb..5feb442ff 100644
+index 23c08bf3d..ade7a7860 100644
 --- kernel/sysctl.c
 +++ kernel/sysctl.c
-@@ -2057,9 +2057,15 @@ static struct ctl_table kern_table[] = {
+@@ -2108,9 +2108,15 @@ static struct ctl_table kern_table[] = {
  #ifdef CONFIG_MODULES
  	{
  		.procname	= "modprobe",
@@ -7664,10 +8334,10 @@ index b9306d2bb..5feb442ff 100644
  	},
  	{
 diff --git security/Kconfig security/Kconfig
-index 7561f6f99..dc3b6ada1 100644
+index 5d412b3dd..6ef0ed89a 100644
 --- security/Kconfig
 +++ security/Kconfig
-@@ -235,6 +235,7 @@ source "security/smack/Kconfig"
+@@ -227,6 +227,7 @@ source "security/smack/Kconfig"
  source "security/tomoyo/Kconfig"
  source "security/apparmor/Kconfig"
  source "security/loadpin/Kconfig"
@@ -7675,36 +8345,28 @@ index 7561f6f99..dc3b6ada1 100644
  source "security/yama/Kconfig"
  source "security/safesetid/Kconfig"
  source "security/lockdown/Kconfig"
-@@ -277,11 +278,11 @@ endchoice
+@@ -270,11 +271,11 @@ endchoice
  
  config LSM
  	string "Ordered list of enabled LSMs"
--	default "lockdown,yama,loadpin,safesetid,integrity,smack,selinux,tomoyo,apparmor,bpf" if DEFAULT_SECURITY_SMACK
--	default "lockdown,yama,loadpin,safesetid,integrity,apparmor,selinux,smack,tomoyo,bpf" if DEFAULT_SECURITY_APPARMOR
--	default "lockdown,yama,loadpin,safesetid,integrity,tomoyo,bpf" if DEFAULT_SECURITY_TOMOYO
--	default "lockdown,yama,loadpin,safesetid,integrity,bpf" if DEFAULT_SECURITY_DAC
--	default "lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf"
-+	default "lockdown,yama,loadpin,safesetid,integrity,smack,selinux,tomoyo,apparmor,bpf,bhv" if DEFAULT_SECURITY_SMACK
-+	default "lockdown,yama,loadpin,safesetid,integrity,apparmor,selinux,smack,tomoyo,bpf,bhv" if DEFAULT_SECURITY_APPARMOR
-+	default "lockdown,yama,loadpin,safesetid,integrity,tomoyo,bpf,bhv" if DEFAULT_SECURITY_TOMOYO
-+	default "lockdown,yama,loadpin,safesetid,integrity,bpf,bhv" if DEFAULT_SECURITY_DAC
-+	default "lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,bhv"
+-	default "landlock,lockdown,yama,loadpin,safesetid,integrity,smack,selinux,tomoyo,apparmor,bpf" if DEFAULT_SECURITY_SMACK
+-	default "landlock,lockdown,yama,loadpin,safesetid,integrity,apparmor,selinux,smack,tomoyo,bpf" if DEFAULT_SECURITY_APPARMOR
+-	default "landlock,lockdown,yama,loadpin,safesetid,integrity,tomoyo,bpf" if DEFAULT_SECURITY_TOMOYO
+-	default "landlock,lockdown,yama,loadpin,safesetid,integrity,bpf" if DEFAULT_SECURITY_DAC
+-	default "landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf"
++	default "landlock,lockdown,yama,loadpin,safesetid,integrity,smack,selinux,tomoyo,apparmor,bpf,bhv" if DEFAULT_SECURITY_SMACK
++	default "landlock,lockdown,yama,loadpin,safesetid,integrity,apparmor,selinux,smack,tomoyo,bpf,bhv" if DEFAULT_SECURITY_APPARMOR
++	default "landlock,lockdown,yama,loadpin,safesetid,integrity,tomoyo,bpf,bhv" if DEFAULT_SECURITY_TOMOYO
++	default "landlock,lockdown,yama,loadpin,safesetid,integrity,bpf,bhv" if DEFAULT_SECURITY_DAC
++	default "landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,bhv"
  	help
  	  A comma-separated list of LSMs, in initialization order.
  	  Any LSMs left off this list will be ignored. This can be
 diff --git security/Makefile security/Makefile
-index 3baf435de..9958117a6 100644
+index 18121f8f8..99425138e 100644
 --- security/Makefile
 +++ security/Makefile
-@@ -10,6 +10,7 @@ subdir-$(CONFIG_SECURITY_TOMOYO)        += tomoyo
- subdir-$(CONFIG_SECURITY_APPARMOR)	+= apparmor
- subdir-$(CONFIG_SECURITY_YAMA)		+= yama
- subdir-$(CONFIG_SECURITY_LOADPIN)	+= loadpin
-+subdir-$(CONFIG_SECURITY_BHV)		+= bhv
- subdir-$(CONFIG_SECURITY_SAFESETID)    += safesetid
- subdir-$(CONFIG_SECURITY_LOCKDOWN_LSM)	+= lockdown
- subdir-$(CONFIG_BPF_LSM)		+= bpf
-@@ -28,6 +29,7 @@ obj-$(CONFIG_SECURITY_TOMOYO)		+= tomoyo/
+@@ -19,6 +19,7 @@ obj-$(CONFIG_SECURITY_TOMOYO)		+= tomoyo/
  obj-$(CONFIG_SECURITY_APPARMOR)		+= apparmor/
  obj-$(CONFIG_SECURITY_YAMA)		+= yama/
  obj-$(CONFIG_SECURITY_LOADPIN)		+= loadpin/
@@ -7737,10 +8399,10 @@ index 000000000..f921bdf38
 +obj-$(CONFIG_SECURITY_BHV) += bhv.o
 diff --git security/bhv/bhv.c security/bhv/bhv.c
 new file mode 100644
-index 000000000..15ba38bb1
+index 000000000..ef742ea11
 --- /dev/null
 +++ security/bhv/bhv.c
-@@ -0,0 +1,338 @@
+@@ -0,0 +1,341 @@
 +#include <linux/lsm_hooks.h>
 +#include <linux/binfmts.h>
 +#include <uapi/linux/magic.h>
@@ -7752,9 +8414,11 @@ index 000000000..15ba38bb1
 +#include <bhv/file_protection.h>
 +#include <bhv/fileops_protection.h>
 +
++#ifdef CONFIG_EXT4_FS
 +// fs/ext4/ext4.h
 +extern const struct file_operations ext4_dir_operations;
 +extern const struct file_operations ext4_file_operations;
++#endif
 +
 +static int bhv_read_file(struct file *file, enum kernel_read_file_id id,
 +			 bool whole_file)
@@ -7930,6 +8594,7 @@ index 000000000..15ba38bb1
 +static bool bhv_check_fileops(struct file *file)
 +{
 +	bool block = false;
++// currently only EXT4 is supported
 +#ifdef CONFIG_EXT4_FS
 +	const char *pathname = NULL;
 +	char *pathname_buf = NULL;
@@ -7981,8 +8646,8 @@ index 000000000..15ba38bb1
 +			}
 +		}
 +	}
-+
 +#endif
++
 +	return block;
 +}
 +
@@ -8080,7 +8745,7 @@ index 000000000..15ba38bb1
 +	.init = bhv_init,
 +};
 diff --git security/selinux/hooks.c security/selinux/hooks.c
-index 227eb8967..e37cf0afa 100644
+index 9ce029b2f..1fe9c9a27 100644
 --- security/selinux/hooks.c
 +++ security/selinux/hooks.c
 @@ -125,7 +125,7 @@ __setup("enforcing=", enforcing_setup);
@@ -8093,7 +8758,7 @@ index 227eb8967..e37cf0afa 100644
  {
  	unsigned long enabled;
 diff --git security/selinux/selinuxfs.c security/selinux/selinuxfs.c
-index 2b745ae8c..94ef66343 100644
+index f2f6203e0..3bef6c2d9 100644
 --- security/selinux/selinuxfs.c
 +++ security/selinux/selinuxfs.c
 @@ -32,6 +32,10 @@
@@ -8107,7 +8772,7 @@ index 2b745ae8c..94ef66343 100644
  /* selinuxfs pseudo filesystem for exporting the security policy API.
     Based on the proc code and the fs/nfsd/nfsctl.c code. */
  
-@@ -611,9 +615,9 @@ static int sel_make_policy_nodes(struct selinux_fs_info *fsi,
+@@ -610,9 +614,9 @@ static int sel_make_policy_nodes(struct selinux_fs_info *fsi,
  	return ret;
  }
  
@@ -8153,7 +8818,7 @@ index 2b745ae8c..94ef66343 100644
  
  static const struct file_operations sel_load_ops = {
  	.write		= sel_write_load,
-@@ -2244,6 +2274,40 @@ static int __init init_sel_fs(void)
+@@ -2249,6 +2279,40 @@ static int __init init_sel_fs(void)
  
  __initcall(init_sel_fs);
  
