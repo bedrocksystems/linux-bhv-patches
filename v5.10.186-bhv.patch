@@ -1,3 +1,15 @@
+diff --git arch/Kconfig arch/Kconfig
+index 632d60e13..10f9a23a7 100644
+--- arch/Kconfig
++++ arch/Kconfig
+@@ -69,6 +69,7 @@ config KPROBES
+ 	bool "Kprobes"
+ 	depends on MODULES
+ 	depends on HAVE_KPROBES
++	depends on !BHV_LOCKDOWN
+ 	select KALLSYMS
+ 	help
+ 	  Kprobes allows you to trap at almost any kernel address and
 diff --git arch/arm64/Kbuild arch/arm64/Kbuild
 index d6465823b..f1ea15a79 100644
 --- arch/arm64/Kbuild
@@ -8,27 +20,6 @@ index d6465823b..f1ea15a79 100644
  obj-$(CONFIG_XEN)	+= xen/
 +obj-$(CONFIG_BHV_VAS)	+= bhv/
  obj-$(CONFIG_CRYPTO)	+= crypto/
-diff --git arch/arm64/Kconfig arch/arm64/Kconfig
-index 34bd4cba8..3d4d2f776 100644
---- arch/arm64/Kconfig
-+++ arch/arm64/Kconfig
-@@ -1183,6 +1183,16 @@ config XEN
- 	help
- 	  Say Y if you want to run Linux in a Virtual Machine on Xen on ARM64.
- 
-+config BHV_VAS
-+	def_bool y
-+	bool "BHV guest support on ARM64"
-+	depends on ARM64 && OF
-+	help
-+	  Say Y if you want to run Linux in a Virtual Machine on BHV on ARM64
-+	  and benefit from Virtualization-assisted Security.
-+
-+source "kernel/bhv/Kconfig"
-+
- config FORCE_MAX_ZONEORDER
- 	int
- 	default "14" if (ARM64_64K_PAGES && TRANSPARENT_HUGEPAGE)
 diff --git arch/arm64/bhv/Makefile arch/arm64/bhv/Makefile
 new file mode 100644
 index 000000000..e66e83fdb
@@ -71,10 +62,10 @@ index 000000000..70a504119
 +}
 diff --git arch/arm64/bhv/integrity.c arch/arm64/bhv/integrity.c
 new file mode 100644
-index 000000000..3613b1ce1
+index 000000000..a2852230a
 --- /dev/null
 +++ arch/arm64/bhv/integrity.c
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,99 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -153,6 +144,26 @@ index 000000000..3613b1ce1
 +			     (void **)&n);
 +
 +	return rv;
++}
++
++void bhv_get_pt_protect_data(bhv_integrity_init_ptpg_arg_t *init_ptpg_arg)
++{
++	init_ptpg_arg->init_pgd = 0;
++	init_ptpg_arg->pt_levels = 0;
++	init_ptpg_arg->num_ranges = 0;
++}
++
++void __init_km bhv_get_pt_protect_pgd_data(uint64_t *pgd_offset,
++					   uint64_t *pgd_value)
++{
++	*pgd_offset = 0;
++	*pgd_value = 0;
++}
++
++bool bhv_pt_protect_check_pgd_arch(struct mm_struct *mm, uint64_t pgd_offset,
++				   uint64_t pgd_value)
++{
++	return true;
 +}
 diff --git arch/arm64/bhv/patch_alternative.c arch/arm64/bhv/patch_alternative.c
 new file mode 100644
@@ -1527,30 +1538,6 @@ index 30dec0197..3235bbc86 100644
  obj-y += realmode/
  obj-y += kernel/
  obj-y += mm/
-diff --git arch/x86/Kconfig arch/x86/Kconfig
-index 2284666e8..b3b35bd2e 100644
---- arch/x86/Kconfig
-+++ arch/x86/Kconfig
-@@ -855,6 +855,19 @@ config ACRN_GUEST
- 	  IOT with small footprint and real-time features. More details can be
- 	  found in https://projectacrn.org/.
- 
-+config BHV_VAS
-+	def_bool y
-+	bool "BHV guest support on x86_64"
-+	depends on X86_64
-+	select VIRTIO_VSOCKETS
-+	select VSOCKETS
-+	select VIRTIO_VSOCKETS_COMMON
-+	help
-+	  Say Y if you want to run Linux in a Virtual Machine on BHV on x86_64
-+	  and benefit from Virtualization-assisted Security.
-+
-+source "kernel/bhv/Kconfig"
-+
- endif #HYPERVISOR_GUEST
- 
- source "arch/x86/Kconfig.cpu"
 diff --git arch/x86/bhv/Makefile arch/x86/bhv/Makefile
 new file mode 100644
 index 000000000..f7f95bc2a
@@ -1691,10 +1678,10 @@ index 000000000..00ca5a1b0
 +#endif // VASKM
 diff --git arch/x86/bhv/integrity.c arch/x86/bhv/integrity.c
 new file mode 100644
-index 000000000..dcc701c3c
+index 000000000..f2d6c9def
 --- /dev/null
 +++ arch/x86/bhv/integrity.c
-@@ -0,0 +1,488 @@
+@@ -0,0 +1,571 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -1719,6 +1706,8 @@ index 000000000..dcc701c3c
 +#include <bhv/interface/common.h>
 +#include <bhv/integrity.h>
 +#include <bhv/bhv.h>
++
++#include <linux/pagewalk.h>
 +
 +#ifndef VASKM // inside kernel tree
 +#include <bhv/kernel-kln.h>
@@ -2172,6 +2161,87 @@ index 000000000..dcc701c3c
 +	return bhv_start_integrity_add_ro();
 +}
 +
++struct bhv_pw_data {
++	bool set;
++	uint64_t pgd_offset;
++	uint64_t pgd_value;
++};
++
++static int __init_km bhv_start_pgd_entry(pgd_t *pgd, unsigned long addr,
++					 unsigned long next,
++					 struct mm_walk *walk)
++{
++	struct bhv_pw_data *data = (struct bhv_pw_data *)walk->private;
++	pr_info("%s: pgd=%llx (%llx) addr=%lx next=%lx\n", __FUNCTION__,
++		(uint64_t)pgd, bhv_virt_to_phys(pgd), addr, next);
++	BUG_ON(data->set);
++	data->pgd_offset = ((uint64_t)pgd & 0xFFF);
++	data->pgd_value = *((uint64_t *)pgd);
++	data->set = true;
++	return 1;
++}
++
++static const struct mm_walk_ops bhv_start_walk_ops = {
++	.pgd_entry = bhv_start_pgd_entry,
++	.p4d_entry = NULL,
++	.pud_entry = NULL,
++	.pmd_entry = NULL,
++	.pte_entry = NULL,
++	.pte_hole = NULL,
++	.hugetlb_entry = NULL,
++	.test_walk = NULL,
++	.pre_vma = NULL,
++	.post_vma = NULL
++};
++
++void bhv_get_pt_protect_data(bhv_integrity_init_ptpg_arg_t *init_ptpg_arg)
++{
++	BUG_ON(CONFIG_PGTABLE_LEVELS < 4 || CONFIG_PGTABLE_LEVELS > 5);
++
++	init_ptpg_arg->init_pgd = (uint64_t)bhv_virt_to_phys(
++		KLN_SYMBOL_P(struct mm_struct *, init_mm)->pgd);
++	init_ptpg_arg->pt_levels = pgtable_l5_enabled() ? 5 : 4;
++	init_ptpg_arg->num_ranges = 2;
++
++	init_ptpg_arg->ranges[0] = (uint64_t)KLN_SYM(_stext);
++	init_ptpg_arg->ranges[1] = (uint64_t)KLN_SYM(_etext);
++	init_ptpg_arg->ranges[2] = (uint64_t)KLN_SYM(__start_rodata);
++	init_ptpg_arg->ranges[3] = (uint64_t)KLN_SYM(__end_rodata);
++}
++
++#define BHV_DIR_PTR_ENTRY_MASK 0x800FFFFFFFFFF89D
++
++void __init_km bhv_get_pt_protect_pgd_data(uint64_t *pgd_offset,
++					   uint64_t *pgd_value)
++{
++	struct bhv_pw_data text_pw_data = { 0 };
++	struct bhv_pw_data ro_pw_data = { 0 };
++
++	walk_page_range_novma(KLN_SYMBOL_P(struct mm_struct *, init_mm),
++			      KLN_SYM(_stext), KLN_SYM(_etext),
++			      &bhv_start_walk_ops,
++			      KLN_SYMBOL_P(struct mm_struct *, init_mm)->pgd,
++			      &text_pw_data);
++	walk_page_range_novma(KLN_SYMBOL_P(struct mm_struct *, init_mm),
++			      KLN_SYM(__start_rodata), KLN_SYM(__end_rodata),
++			      &bhv_start_walk_ops,
++			      KLN_SYMBOL_P(struct mm_struct *, init_mm)->pgd,
++			      &ro_pw_data);
++
++	BUG_ON(text_pw_data.pgd_offset != ro_pw_data.pgd_offset ||
++	       text_pw_data.pgd_value != ro_pw_data.pgd_value);
++
++	*pgd_offset = text_pw_data.pgd_offset;
++	*pgd_value = (text_pw_data.pgd_value & BHV_DIR_PTR_ENTRY_MASK);
++}
++
++bool bhv_pt_protect_check_pgd_arch(struct mm_struct *mm, uint64_t pgd_offset,
++				   uint64_t pgd_value)
++{
++	uint64_t value = *((uint64_t *)(((uint8_t *)mm->pgd) + pgd_offset));
++	return ((value & BHV_DIR_PTR_ENTRY_MASK) == pgd_value);
++}
++
 +void __init bhv_register_idt(uint64_t addr, int numpages)
 +{
 +	table_data.addr = addr;
@@ -2185,10 +2255,10 @@ index 000000000..dcc701c3c
 +}
 diff --git arch/x86/bhv/patch_alternative.c arch/x86/bhv/patch_alternative.c
 new file mode 100644
-index 000000000..e213bd2c7
+index 000000000..e6a4fe3c7
 --- /dev/null
 +++ arch/x86/bhv/patch_alternative.c
-@@ -0,0 +1,741 @@
+@@ -0,0 +1,815 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -2393,13 +2463,29 @@ index 000000000..e213bd2c7
 +
 +	// Check opcode
 +	if (lock) {
-+		if (*target != unlock_opcode)
-+			return -EACCES;
++		if (*target != unlock_opcode) {
++			if (bhv_patch_violation_hypercall(
++				    target, "Invalid altinst smp unlock patch",
++				    bhv_arg)) {
++				// Block attempt.
++				return -EACCES;
++			}
++
++			// Allow patch.
++		}
 +
 +		opcode = lock_opcode;
 +	} else {
-+		if (*target != lock_opcode)
-+			return -EACCES;
++		if (*target != lock_opcode) {
++			if (bhv_patch_violation_hypercall(
++				    target, "Invalid altinst smp lock patch",
++				    bhv_arg)) {
++				// Block attempt.
++				return -EACCES;
++			}
++
++			// Allow patch
++		}
 +
 +		opcode = unlock_opcode;
 +	}
@@ -2589,18 +2675,47 @@ index 000000000..e213bd2c7
 +		fallthrough;
 +	default:
 +		WARN_ON_ONCE(1);
-+		goto out;
++		if (bhv_patch_violation_hypercall(
++			    addr, "Invalid altinst retpoline (invalid op)",
++			    bhv_arg)) {
++			// Block attempt.
++			goto out;
++		}
++
++		// Allow change.
 +	}
 +
 +	len = bhv_patch_retpoline(addr, &insn, bytes);
-+	if (len == insn.length) {
-+		if (len > BHV_MAX_PATCH_SZ)
++
++	// Retpolines may be disabled or there is another error
++	// this is not an attack.
++	if (len < 0)
++		goto out;
++
++	if (len != insn.length) {
++		if (bhv_patch_violation_hypercall(
++			    addr, "Invalid altinst retpoline (wrong length)",
++			    bhv_arg)) {
++			// Block attempt.
 +			goto out;
++		}
 +
-+		bhv_optimize_nops(bytes, len, bhv_arg, true);
-+
-+		bhv_patch_hypercall((void *)addr, bytes, len, false, bhv_arg);
++		// Allow change.
 +	}
++
++	if (len > BHV_MAX_PATCH_SZ) {
++		if (bhv_patch_violation_hypercall(
++			    addr, "Invalid altinst retpoline (patch too big)",
++			    bhv_arg)) {
++			// Block attempt.
++			goto out;
++		}
++
++		// Allow change.
++	}
++
++	bhv_optimize_nops(bytes, len, bhv_arg, true);
++	bhv_patch_hypercall((void *)addr, bytes, len, false, bhv_arg);
 +
 +out:
 +	bhv_vault_close_hyp();
@@ -2654,12 +2769,33 @@ index 000000000..e213bd2c7
 +		goto out;
 +
 +	len = bhv_patch_return(addr, &insn, bytes);
-+	if (len == insn.length) {
-+		if (len > BHV_MAX_PATCH_SZ)
-+			goto out;
++	// Feature may be disabled.
++	if (len < 0)
++		goto out;
 +
-+		bhv_patch_hypercall(addr, bytes, len, false, bhv_arg);
++	if (len != insn.length) {
++		if (bhv_patch_violation_hypercall(
++			    addr, "Invalid altinst return (wrong length)",
++			    bhv_arg)) {
++			// Block attempt.
++			goto out;
++		}
++
++		// Allow change.
 +	}
++
++	if (len > BHV_MAX_PATCH_SZ) {
++		if (bhv_patch_violation_hypercall(
++			    addr, "Invalid altinst return (patch too big)",
++			    bhv_arg)) {
++			// Block attempt.
++			goto out;
++		}
++
++		// Allow change.
++	}
++
++	bhv_patch_hypercall(addr, bytes, len, false, bhv_arg);
 +
 +out:
 +	bhv_vault_close_hyp();
@@ -2743,11 +2879,19 @@ index 000000000..e213bd2c7
 +	replacement = (u8 *)&a->repl_offset + a->repl_offset;
 +
 +	if (a->instrlen > sizeof(insn_buff)) {
-+		return -EACCES;
++		if (bhv_patch_violation_hypercall(
++			    instr, "Invalid altinst patch (too big)",
++			    bhv_arg)) {
++			// Block attempt.
++			return -EACCES;
++		}
++
++		// Allow patch.
 +	}
 +
 +	if (a->cpuid >= (NCAPINTS + NBUGINTS) * 32) {
-+		return -EACCES;
++		// This can happen legitmately. We just return.
++		return -EINVAL;
 +	}
 +
 +	if (!boot_cpu_has(a->cpuid & ~ALTINSTR_FLAG_INV) ==
@@ -2783,7 +2927,7 @@ index 000000000..e213bd2c7
 +	for (; insn_buff_sz < a->instrlen; insn_buff_sz++)
 +		insn_buff[insn_buff_sz] = 0x90;
 +#endif // BHV_KVERS
-+	
++
 +	if (insn_buff_sz >= sizeof(bhv_arg->bhv_patch_patch_arg.src_value))
 +		panic("Instruction buffer size too small!");
 +
@@ -3031,10 +3175,10 @@ index 000000000..18d202148
 +}
 diff --git arch/x86/bhv/patch_static_call.c arch/x86/bhv/patch_static_call.c
 new file mode 100644
-index 000000000..89b1aa817
+index 000000000..d208e4e93
 --- /dev/null
 +++ arch/x86/bhv/patch_static_call.c
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,179 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -3167,8 +3311,15 @@ index 000000000..89b1aa817
 +#endif // LINUX_VERSION_CODE >= 6.1
 +	}
 +
-+	if (memcmp(insn, code, size) == 0)
-+		goto out;
++	if (memcmp(insn, code, size) == 0) {
++		if (bhv_patch_violation_hypercall(insn, "Invalid static call",
++						  bhv_arg)) {
++			// Block attempt.
++			goto out;
++		}
++
++		// Allow patch
++	}
 +
 +	if (size > BHV_MAX_PATCH_SZ)
 +		panic("BHV: static call transform patch too large");
@@ -3273,6 +3424,26 @@ index 000000000..234cc7ce9
 +}
 +
 +#endif // VASKM
+diff --git arch/x86/entry/common.c arch/x86/entry/common.c
+index 93a3122cd..e5b32e57d 100644
+--- arch/x86/entry/common.c
++++ arch/x86/entry/common.c
+@@ -35,11 +35,15 @@
+ #include <asm/syscall.h>
+ #include <asm/irq_stack.h>
+ 
++#include <bhv/integrity.h>
++
+ #ifdef CONFIG_X86_64
+ __visible noinstr void do_syscall_64(unsigned long nr, struct pt_regs *regs)
+ {
+ 	nr = syscall_enter_from_user_mode(regs, nr);
+ 
++	bhv_pt_protect_check_pgd(current->active_mm);
++
+ 	instrumentation_begin();
+ 	if (likely(nr < NR_syscalls)) {
+ 		nr = array_index_nospec(nr, NR_syscalls);
 diff --git arch/x86/entry/entry_64.S arch/x86/entry/entry_64.S
 index 23212c53c..d26553361 100644
 --- arch/x86/entry/entry_64.S
@@ -5199,6 +5370,75 @@ index eafb75755..cebc9294d 100644
  	.open		= mountstats_open,
  	.read_iter	= seq_read_iter,
  	.splice_read	= generic_file_splice_read,
+diff --git fs/read_write.c fs/read_write.c
+index 0066acb6b..f19ecd331 100644
+--- fs/read_write.c
++++ fs/read_write.c
+@@ -25,6 +25,8 @@
+ #include <linux/uaccess.h>
+ #include <asm/unistd.h>
+ 
++#include "bhv/file_protection.h"
++
+ const struct file_operations generic_ro_fops = {
+ 	.llseek		= generic_file_llseek,
+ 	.read_iter	= generic_file_read_iter,
+@@ -605,6 +607,9 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
+ 		ret = new_sync_write(file, buf, count, pos);
+ 	else
+ 		ret = -EINVAL;
++
++	bhv_check_file_dirty_cred(file, MAY_WRITE);
++
+ 	if (ret > 0) {
+ 		fsnotify_modify(file);
+ 		add_wchar(current, ret);
+@@ -892,6 +897,9 @@ ssize_t vfs_iocb_iter_write(struct file *file, struct kiocb *iocb,
+ 		return ret;
+ 
+ 	ret = call_write_iter(file, iocb, iter);
++
++	bhv_check_file_dirty_cred(file, MAY_WRITE);
++
+ 	if (ret > 0)
+ 		fsnotify_modify(file);
+ 
+@@ -902,9 +910,14 @@ EXPORT_SYMBOL(vfs_iocb_iter_write);
+ ssize_t vfs_iter_write(struct file *file, struct iov_iter *iter, loff_t *ppos,
+ 		rwf_t flags)
+ {
++	ssize_t ret = 0;
+ 	if (!file->f_op->write_iter)
+ 		return -EINVAL;
+-	return do_iter_write(file, iter, ppos, flags);
++	ret = do_iter_write(file, iter, ppos, flags);
++
++	bhv_check_file_dirty_cred(file, MAY_WRITE);
++
++	return ret;
+ }
+ EXPORT_SYMBOL(vfs_iter_write);
+ 
+@@ -940,6 +953,9 @@ static ssize_t vfs_writev(struct file *file, const struct iovec __user *vec,
+ 		file_end_write(file);
+ 		kfree(iov);
+ 	}
++
++	bhv_check_file_dirty_cred(file, MAY_WRITE);
++
+ 	return ret;
+ }
+ 
+@@ -1533,6 +1549,9 @@ ssize_t vfs_copy_file_range(struct file *file_in, loff_t pos_in,
+ 				      flags);
+ 
+ done:
++
++	bhv_check_file_dirty_cred(file_out, MAY_WRITE);
++
+ 	if (ret > 0) {
+ 		fsnotify_access(file_in);
+ 		add_rchar(current, ret);
 diff --git fs/xfs/xfs_file.c fs/xfs/xfs_file.c
 index 9b6c5ba5f..a2dfad1de 100644
 --- fs/xfs/xfs_file.c
@@ -5555,10 +5795,10 @@ index 000000000..a35690733
 +#endif /* __BHV_CREDS_H__ */
 diff --git include/bhv/domain.h include/bhv/domain.h
 new file mode 100644
-index 000000000..7abb98155
+index 000000000..a1fee1120
 --- /dev/null
 +++ include/bhv/domain.h
-@@ -0,0 +1,212 @@
+@@ -0,0 +1,225 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -5579,6 +5819,9 @@ index 000000000..7abb98155
 +#ifdef CONFIG_PAGE_TABLE_ISOLATION
 +#include <asm/bhv/domain.h>
 +#endif
++
++#define BHV_INIT_DOMAIN         0UL
++#define BHV_INVALID_DOMAIN      (-1UL)
 +
 +#ifdef CONFIG_MEM_NS
 +
@@ -5630,6 +5873,12 @@ index 000000000..7abb98155
 +int bhv_domain_transfer_mm(struct mm_struct *const mm,
 +			   struct nsproxy *const old_ns,
 +			   struct nsproxy *const new_ns);
++int bhv_domain_report(const struct task_struct *t,
++		      const struct mm_struct *mm_target,
++		      const struct vm_area_struct *vma,
++		      unsigned int gup_flags);
++bool bhv_forced_mem_access_permitted(struct vm_area_struct *vma,
++				     bool write, bool foreign);
 +
 +void bhv_domain_set_pte_at(struct mm_struct *mm, unsigned long addr,
 +			   pte_t *ptep, pte_t pte);
@@ -5657,17 +5906,7 @@ index 000000000..7abb98155
 +
 +static inline uint64_t bhv_get_domain(const struct task_struct *task)
 +{
-+	/*
-+	 * Kernel threads, and threads that do not act on behalf of a user space
-+	 * task, do not have a valid nsproxy. These threads shall switch to the
-+	 * default domain that we use for the init_task. Alternatively, we can
-+	 * define a dedicated domain, which all kernel threads will enter if
-+	 * they do not execute on behalf of a user space task.
-+	 */
-+	if (task == NULL || task->nsproxy == NULL)
-+		return init_task.nsproxy->mem_ns->domain;
-+
-+	return task->nsproxy->mem_ns->domain;
++	return memns_of_task(task)->domain;
 +}
 +
 +static inline void bhv_domain_enter(const struct task_struct *next)
@@ -5738,6 +5977,20 @@ index 000000000..7abb98155
 +					 struct nsproxy *const new_ns)
 +{
 +	return 0;
++}
++
++static inline int bhv_domain_report(const struct task_struct *t,
++				    const struct mm_struct *mm_target,
++				    const struct vm_area_struct *vma,
++				    unsigned int gup_flags)
++{
++	return 0;
++}
++
++static inline bool bhv_forced_mem_access_permitted(struct vm_area_struct *vma,
++				     		   bool write, bool foreign)
++{
++	return true;
 +}
 +
 +static inline void bhv_domain_enter(const struct task_struct *next)
@@ -5869,10 +6122,10 @@ index 000000000..48a576cd1
 \ No newline at end of file
 diff --git include/bhv/file_protection.h include/bhv/file_protection.h
 new file mode 100644
-index 000000000..7abfb9507
+index 000000000..e8765d6fd
 --- /dev/null
 +++ include/bhv/file_protection.h
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,85 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -5893,7 +6146,6 @@ index 000000000..7abfb9507
 +extern bhv_file_protection_config_t bhv_file_protection_config __ro_after_init;
 +
 +void __init bhv_file_protection_init(void);
-+
 +static inline bool bhv_file_protection_is_enabled(void)
 +{
 +	if (!is_bhv_initialized() || bhv_configuration_bitmap == NULL)
@@ -5929,13 +6181,32 @@ index 000000000..7abfb9507
 +	return true;
 +}
 +
-+bool bhv_block_read_only_file_write(const char *target);
++static inline bool bhv_dirtycred_file_protection_is_enabled(void)
++{
++	if (!bhv_file_protection_is_enabled())
++		return false;
++
++	if (!test_bit(
++		    BHV_VAS_FILE_PROTECTION_FEATURE_DIRTYCRED_MITIGATION,
++		    (unsigned long *)&bhv_file_protection_config.feature_bitmap))
++		return false;
++
++	return true;
++}
++
++
++bool bhv_block_read_only_file_write(const char *target, bool dirtycred);
++void bhv_check_file_dirty_cred(struct file* file, int mask);
 +
 +#else /* CONFIG_BHV_VAS */
 +
 +static inline bool bhv_file_protection_is_enabled(void)
 +{
 +	return false;
++}
++
++static void bhv_check_file_dirty_cred(struct file*, int) {
++	return;
 +}
 +
 +#endif /* CONFIG_BHV_VAS */
@@ -5988,10 +6259,10 @@ index 000000000..ab3f791de
 +#endif /* __BHV_FILEOPS__ */
 diff --git include/bhv/fileops_internal_fopsmap.h include/bhv/fileops_internal_fopsmap.h
 new file mode 100644
-index 000000000..be983babe
+index 000000000..7a1d1ddb0
 --- /dev/null
 +++ include/bhv/fileops_internal_fopsmap.h
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,46 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -6007,6 +6278,10 @@ index 000000000..be983babe
 +#endif
 +        // tmpfs files and dirs
 +FOPS_MAP(tmpfs, BHV_VAS_FILEOPS_PROTECTION_TMPFS, shmem_file_operations, simple_dir_operations)
++        // sockets
++FOPS_MAP_DIRNULL(sockfs, BHV_VAS_FILEOPS_PROTECTION_SOCKET, socket_file_ops)
++        // pipes
++FOPS_MAP_DIRNULL(pipefs, BHV_VAS_FILEOPS_PROTECTION_PIPE, pipefifo_fops)
 +        // special chardevs
 +#if defined CONFIG_DEVMEM || defined FILEOPS_INTERNAL_FOPSMAP_ALL
 +FOPS_MAP_DIRNULL(mem, BHV_VAS_FILEOPS_PROTECTION_MEM, mem_fops)
@@ -6026,19 +6301,20 @@ index 000000000..be983babe
 +        // xfs files and dirs
 +FOPS_MAP(xfs, BHV_VAS_FILEOPS_PROTECTION_XFS, xfs_file_operations, xfs_dir_file_operations)
 +#endif
++        // sys fs
++FOPS_MAP(sysfs, BHV_VAS_FILEOPS_PROTECTION_SYSFS, kernfs_file_fops, kernfs_dir_fops)
 +
 +#undef FOPS_MAP
 +#undef FOPS_MAP_DIRNULL
 +#ifdef FILEOPS_INTERNAL_FOPSMAP_ALL
 +#undef FILEOPS_INTERNAL_FOPSMAP_ALL
 +#endif
-\ No newline at end of file
 diff --git include/bhv/fileops_internal_symlist.h include/bhv/fileops_internal_symlist.h
 new file mode 100644
-index 000000000..6b696e32b
+index 000000000..abd9d4eeb
 --- /dev/null
 +++ include/bhv/fileops_internal_symlist.h
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,164 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -6091,6 +6367,16 @@ index 000000000..6b696e32b
 +FOPS(xfs_dir_file_operations)
 +FOPS(xfs_file_operations)
 +#endif
++
++// net/sockets.c
++FOPS(socket_file_ops)
++// fs/pipe.c
++FOPS(pipefifo_fops)
++
++// fs/kernfs/file.c
++FOPS(kernfs_file_fops)
++// fs/kernfs/dir.c
++FOPS(kernfs_dir_fops)
 +
 +// PROC:
 +// fs/proc/inode.c
@@ -6196,10 +6482,10 @@ index 000000000..6b696e32b
 \ No newline at end of file
 diff --git include/bhv/fileops_protection.h include/bhv/fileops_protection.h
 new file mode 100644
-index 000000000..546f05f19
+index 000000000..9e5aaa330
 --- /dev/null
 +++ include/bhv/fileops_protection.h
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,23 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -6216,8 +6502,10 @@ index 000000000..546f05f19
 +
 +void __init bhv_fileops_protection_mm_init(void);
 +
++bool bhv_strict_fileops_enforced(void);
 +bool bhv_block_fileops(const char *, u8, bool, const void *);
 +u8 bhv_fileops_type(u32 fs_magic);
++bool bhv_fileops_is_ro(u64 f_op);
 +
 +#endif // CONFIG_BHV_VAS
 +#endif /* __BHV_FILEOPS_PROTECTION_H__ */
@@ -6259,10 +6547,10 @@ index 000000000..a18468423
 \ No newline at end of file
 diff --git include/bhv/guestlog.h include/bhv/guestlog.h
 new file mode 100644
-index 000000000..e8086dc31
+index 000000000..e94c81888
 --- /dev/null
 +++ include/bhv/guestlog.h
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,129 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -6331,6 +6619,19 @@ index 000000000..e8086dc31
 +	return true;
 +}
 +
++static inline bool bhv_guestlog_log_unknown_fileops(void)
++{
++	if (!bhv_guestlog_enabled())
++		return false;
++
++	if (!bhv_guestlog_config.valid ||
++	    !test_bit(BHV_GUESTLOG_CONFIG_LOG_UNKNOWN_FILEOPS_EVENTS,
++		      (unsigned long *)&bhv_guestlog_config.log_bitmap))
++		return false;
++
++	return true;
++}
++
 +static inline uint16_t bhv_guestlog_calc_msg_sz(uint16_t type, size_t buf_sz)
 +{
 +	switch (type) {
@@ -6356,6 +6657,10 @@ index 000000000..e8086dc31
 +		return sizeof(guestlog_msg_header_t) +
 +		       sizeof(bhv_event_context_t) +
 +		       sizeof(guestlog_msg_kernel_access_t);
++	case BHV_GUESTLOG_MSG_TYPE_FOPS_UNKNOWN:
++		return sizeof(guestlog_msg_header_t) +
++		       sizeof(bhv_event_context_t) +
++		       sizeof(guestlog_msg_fops_unknown_t) + buf_sz;
 +	default:
 +		BUG();
 +		return 0;
@@ -6371,6 +6676,8 @@ index 000000000..e8086dc31
 +				  const char *comm);
 +int bhv_guestlog_log_driver_load(const char *name);
 +int bhv_guestlog_log_kaccess(uint64_t addr, uint8_t type);
++int bhv_guestlog_log_fops_unknown(uint32_t magic, const char *pathname,
++				  uint64_t type, const void *fops_ptr);
 +
 +#endif /* __BHV_GUESTLOG_H__ */
 \ No newline at end of file
@@ -6429,16 +6736,17 @@ index 000000000..67fe9bdb8
 +#endif /* __BHV_INIT_H__ */
 diff --git include/bhv/integrity.h include/bhv/integrity.h
 new file mode 100644
-index 000000000..340f862b3
+index 000000000..0372a3b1c
 --- /dev/null
 +++ include/bhv/integrity.h
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,257 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
 + * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
 + *          Sergej Proskurin <sergej@bedrocksystems.com>
 + *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ *          Tommaso Frassetto <tommaso@bedrocksystems.com>
 + */
 +
 +#ifndef __BHV_INTEGRITY_H__
@@ -6468,16 +6776,45 @@ index 000000000..340f862b3
 +	return (bool)test_bit(BHV_CONFIG_INTEGRITY, bhv_configuration_bitmap);
 +}
 +
++static inline bool bhv_integrity_pt_prot_is_enabled(void)
++{
++	if (!is_bhv_initialized())
++		return false;
++
++	if (!bhv_integrity_is_enabled())
++		return false;
++
++	return (bool)test_bit(BHV_CONFIG_INTEGRITY_PT_PROT,
++			      bhv_configuration_bitmap);
++}
++
 +void __init bhv_integrity_mm_init(void);
 +
 +int bhv_start_integrity_arch(void);
 +
++extern bool bhv_allow_kmod_loads;
++extern bool bhv_allow_patch;
++extern bool bhv_integrity_freeze_create_currently_frozen;
++extern bool bhv_integrity_freeze_update_currently_frozen;
++extern bool bhv_integrity_freeze_remove_currently_frozen;
++extern bool bhv_integrity_freeze_patch_currently_frozen;
 +int bhv_integrity_freeze_events(uint64_t flags);
++int bhv_enable_integrity_freeze_flag(uint64_t flags, bool skip_locks);
++
 +int bhv_create_kern_phys_mem_region_hyp(uint64_t owner,
 +					bhv_mem_region_t *region_head);
 +int bhv_update_kern_phys_mem_region_hyp(bhv_mem_region_t *region_head);
 +int bhv_remove_kern_phys_mem_region_by_region_hyp(bhv_mem_region_t *region_head);
 +int bhv_remove_kern_phys_mem_region_by_owner_hyp(uint64_t owner);
++
++void __init_km bhv_start_ptpg(void);
++void __init_km bhv_get_pt_protect_pgd_data(uint64_t *pgd_offset,
++					   uint64_t *pgd_value);
++int bhv_integrity_init_ptpg(void);
++void bhv_get_pt_protect_data(bhv_integrity_init_ptpg_arg_t *init_ptpg_arg);
++void bhv_pt_protect_check_pgd(struct mm_struct *mm);
++bool bhv_pt_protect_check_pgd_arch(struct mm_struct *mm, uint64_t pgd_offset,
++				   uint64_t pgd_value);
 +
 +static inline void bhv_release_arg_list(struct list_head *head)
 +{
@@ -6615,6 +6952,11 @@ index 000000000..340f862b3
 +	return false;
 +}
 +
++static inline bool bhv_integrity_pt_prot_is_enabled(void)
++{
++	return false;
++}
++
 +static inline void bhv_integrity_mm_init(void)
 +{
 +}
@@ -6646,6 +6988,10 @@ index 000000000..340f862b3
 +static inline int bhv_remove_kern_phys_mem_region_by_owner_hyp(uint64_t owner)
 +{
 +	return 0;
++}
++
++static inline void bhv_pt_protect_check_pgd(struct mm_struct *mm)
++{
 +}
 +
 +#endif /* CONFIG_BHV_VAS */
@@ -6695,10 +7041,10 @@ index 000000000..d6d60fbfd
 +#endif /* __BHV_INTERFACE_ACL_H__ */
 diff --git include/bhv/interface/common.h include/bhv/interface/common.h
 new file mode 100644
-index 000000000..fea4e90c5
+index 000000000..1b176ce22
 --- /dev/null
 +++ include/bhv/interface/common.h
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,61 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -6754,6 +7100,7 @@ index 000000000..fea4e90c5
 +#define BHV_CONFIG_GUEST_POLICY 6
 +#define BHV_CONFIG_REGISTER_PROTECTION 7
 +#define BHV_CONFIG_STRONG_ISOLATION 8
++#define BHV_CONFIG_INTEGRITY_PT_PROT 9
 +
 +/* Common Defines */
 +#define BHV_INVALID_PHYS_ADDR (~0ULL)
@@ -6860,10 +7207,10 @@ index 000000000..3698c2406
 +#endif /* __BHV_INTERFACE_CREDS_H__ */
 diff --git include/bhv/interface/domain.h include/bhv/interface/domain.h
 new file mode 100644
-index 000000000..fea9b9197
+index 000000000..2db294fff
 --- /dev/null
 +++ include/bhv/interface/domain.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,111 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -6887,6 +7234,8 @@ index 000000000..fea9b9197
 +#define BHV_VAS_DOMAIN_OP_UNMAP 7U
 +#define BHV_VAS_DOMAIN_OP_BATCH 8U
 +#define BHV_VAS_DOMAIN_OP_PGD_DESTROY 9U
++#define BHV_VAS_DOMAIN_OP_REPORT 10U
++#define BHV_VAS_DOMAIN_OP_REPORT_FORCED_MEM_ACCESS 11U
 +
 +#ifdef BHV_VAS_DOMAIN_DEBUG
 +#define BHV_VAS_DOMAIN_OP_DEBUG 42U
@@ -6894,6 +7243,7 @@ index 000000000..fea9b9197
 +
 +typedef struct {
 +	uint64_t pti;
++	uint64_t isolate;
 +	uint64_t batched_region;
 +} __attribute__((__packed__)) bhv_domain_config_arg_t;
 +
@@ -6920,10 +7270,21 @@ index 000000000..fea9b9197
 +} __attribute__((__packed__)) bhv_domain_unmap_arg_t;
 +
 +typedef struct {
++	bhv_domain_t domain_src;
++	bhv_domain_t domain_target;
++	struct {
++		uint64_t start;
++		uint64_t end;
++	} range;
++	bool write;
++	volatile bool block;
++} __attribute__((__packed__)) bhv_domain_report_arg_t;
++
++typedef struct {
 +	bhv_domain_t domain;
 +	union {
 +		bhv_domain_config_arg_t config;
-+		// Used for switch.
++		bhv_domain_report_arg_t report;
 +		uint64_t id;
 +	};
 +} __attribute__((__packed__)) bhv_domain_arg_t;
@@ -7000,10 +7361,10 @@ index 000000000..8cd9e67da
 +#endif /* __BHV_INTERFACE_EVENT_H__ */
 diff --git include/bhv/interface/file_protection.h include/bhv/interface/file_protection.h
 new file mode 100644
-index 000000000..a978a8572
+index 000000000..2abaf4fea
 --- /dev/null
 +++ include/bhv/interface/file_protection.h
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,71 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -7022,10 +7383,12 @@ index 000000000..a978a8572
 +#define BHV_VAS_FILE_PROTECTION_OP_INIT 0U
 +#define BHV_VAS_FILE_PROTECTION_OP_VIOLATION_READ_ONLY_FILE_PROTECTION 1U
 +#define BHV_VAS_FILE_PROTECTION_OP_VIOLATION_FILEOPS_PROTECTION 2U
++#define BHV_VAS_FILE_PROTECTION_OP_VIOLATION_DIRTYCRED 3U
 +
 +/* BHV VAS FILE PROTECTION FEATURES */
 +#define BHV_VAS_FILE_PROTECTION_FEATURE_READ_ONLY_FILE_PROTECTION 0U
 +#define BHV_VAS_FILE_PROTECTION_FEATURE_FILEOPS_PROTECTION 1U
++#define BHV_VAS_FILE_PROTECTION_FEATURE_DIRTYCRED_MITIGATION 2U
 +
 +#define BHV_VAS_FILE_PROTECTION_MAX_PATH_SZ 256
 +
@@ -7044,7 +7407,10 @@ index 000000000..a978a8572
 +#define BHV_VAS_FILEOPS_PROTECTION_CONSOLE 11U
 +#define BHV_VAS_FILEOPS_PROTECTION_PROC 12U
 +#define BHV_VAS_FILEOPS_PROTECTION_XFS 13U
-+#define BHV_VAS_FILEOPS_PROTECTION_MAP_LENGTH 14
++#define BHV_VAS_FILEOPS_PROTECTION_SOCKET 14U
++#define BHV_VAS_FILEOPS_PROTECTION_PIPE 15U
++#define BHV_VAS_FILEOPS_PROTECTION_SYSFS 16U
++#define BHV_VAS_FILEOPS_PROTECTION_MAP_LENGTH 17
 +#define BHV_VAS_FILEOPS_PROTECTION_UNSUPPORTED 255U
 +
 +#define BHV_VAS_FILEOPS_PATH_MAX_SZ 1024
@@ -7104,10 +7470,10 @@ index 000000000..dcbd0b358
 \ No newline at end of file
 diff --git include/bhv/interface/guestlog.h include/bhv/interface/guestlog.h
 new file mode 100644
-index 000000000..f02d8106f
+index 000000000..1b5f380c8
 --- /dev/null
 +++ include/bhv/interface/guestlog.h
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,129 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -7136,6 +7502,7 @@ index 000000000..f02d8106f
 +#define BHV_GUESTLOG_MSG_TYPE_PROCESS_EXIT 3U
 +#define BHV_GUESTLOG_MSG_TYPE_DRIVER_LOAD 4U
 +#define BHV_GUESTLOG_MSG_TYPE_KERNEL_ACCESS 5U
++#define BHV_GUESTLOG_MSG_TYPE_FOPS_UNKNOWN 6U
 +
 +/* BHV KACCESS TYPES */
 +#define BHV_GUESTLOG_KACCESS_TYPE_READ 0
@@ -7148,8 +7515,8 @@ index 000000000..f02d8106f
 +} __attribute__((__packed__)) guestlog_msg_header_t;
 +
 +#define BHV_GUESTLOG_MAX_MSG_SZ (BHV_GUESTCONN_MAX_BODY_SZ)
-+#define BHV_GUESTLOG_MAX_MSG_DATA_SZ                                           \
-+	(BHV_GUESTLOG_MAX_MSG_SZ - sizeof(guestlog_msg_header_t) -             \
++#define BHV_GUESTLOG_MAX_MSG_DATA_SZ                               \
++	(BHV_GUESTLOG_MAX_MSG_SZ - sizeof(guestlog_msg_header_t) - \
 +	 sizeof(bhv_event_context_t))
 +
 +typedef struct {
@@ -7201,6 +7568,15 @@ index 000000000..f02d8106f
 +	      BHV_GUESTLOG_MAX_MSG_DATA_SZ);
 +
 +typedef struct {
++	uint64_t magic;
++	uint64_t type;
++	uint64_t address;
++	char path[];
++} __attribute__((__packed__)) guestlog_msg_fops_unknown_t;
++static_assert(sizeof(guestlog_msg_fops_unknown_t) <=
++	      BHV_GUESTLOG_MAX_MSG_DATA_SZ);
++
++typedef struct {
 +	guestlog_msg_header_t header;
 +	bhv_event_context_t context;
 +	union {
@@ -7210,6 +7586,7 @@ index 000000000..f02d8106f
 +		guestlog_msg_process_exit_t process_exit;
 +		guestlog_msg_driver_load_t driver_load;
 +		guestlog_msg_kernel_access_t kernel_access;
++		guestlog_msg_fops_unknown_t fops_unknown;
 +		uint8_t __raw_data[BHV_GUESTLOG_MAX_MSG_DATA_SZ];
 +	};
 +} __attribute__((__packed__)) guestlog_msg_t;
@@ -7218,6 +7595,7 @@ index 000000000..f02d8106f
 +#define BHV_GUESTLOG_CONFIG_LOG_PROCESS_EVENTS 0
 +#define BHV_GUESTLOG_CONFIG_LOG_DRIVER_EVENTS 1
 +#define BHV_GUESTLOG_CONFIG_LOG_KACCESS_EVENTS 2
++#define BHV_GUESTLOG_CONFIG_LOG_UNKNOWN_FILEOPS_EVENTS 3
 +
 +typedef struct {
 +	uint64_t log_bitmap;
@@ -7228,10 +7606,10 @@ index 000000000..f02d8106f
 \ No newline at end of file
 diff --git include/bhv/interface/hypercall.h include/bhv/interface/hypercall.h
 new file mode 100644
-index 000000000..4a4283bf7
+index 000000000..396a988b8
 --- /dev/null
 +++ include/bhv/interface/hypercall.h
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,131 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -7324,6 +7702,44 @@ index 000000000..4a4283bf7
 +	return rc;
 +}
 +
++/**
++* Handle patch violation hypercalls
++*
++* This function sends a patch violation hypercall and determines whether the
++* patch should be blocked.
++*
++* \returns True if the patch should be blocked, false otherwise.
++*/
++static __always_inline bool
++bhv_patch_violation_hypercall(void *dest_virt_addr, const char *message,
++			      bhv_patch_arg_t *volatile bhv_arg)
++{
++	unsigned long r;
++
++	// Setup arguments. We block by default
++	bhv_arg->bhv_patch_violation_arg.dest_virt_addr =
++		(uint64_t)dest_virt_addr;
++	bhv_arg->bhv_patch_violation_arg.dest_phys_addr =
++		bhv_virt_to_phys(dest_virt_addr);
++	bhv_arg->bhv_patch_violation_arg.block = true;
++	if (message != NULL)
++		strncpy(bhv_arg->bhv_patch_violation_arg.message, message,
++			BHV_MAX_VIOLATION_MSG_SZ);
++	bhv_arg->bhv_patch_violation_arg.message[BHV_MAX_VIOLATION_MSG_SZ - 1] =
++		'\0';
++
++	// Send hypercall
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_PATCH, BHV_VAS_PATCH_OP_VIOLATION,
++			      bhv_arg);
++
++	// Block in case of error or if block is set
++	if (r || bhv_arg->bhv_patch_violation_arg.block)
++		return true;
++
++	// Do not block the patch
++	return false;
++}
++
 +#endif /* _ASM_INTERFACE_BHV_HYPERCALL_H */
 diff --git include/bhv/interface/init.h include/bhv/interface/init.h
 new file mode 100644
@@ -7381,10 +7797,10 @@ index 000000000..aa3597a1d
 +#endif /* __BHV_INTERFACE_INIT_H__ */
 diff --git include/bhv/interface/integrity.h include/bhv/interface/integrity.h
 new file mode 100644
-index 000000000..37573a3ab
+index 000000000..7f7a67bb7
 --- /dev/null
 +++ include/bhv/interface/integrity.h
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,122 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -7415,6 +7831,8 @@ index 000000000..37573a3ab
 +#define BHV_VAS_INTEGRITY_OP_UPDATE_PHYS	1U
 +#define BHV_VAS_INTEGRITY_OP_REMOVE_PHYS	2U
 +#define BHV_VAS_INTEGRITY_OP_FREEZE 		3U
++#define BHV_VAS_INTEGRITY_OP_PTPG_INIT		4U
++#define BHV_VAS_INTEGRITY_OP_PTPG_REPORT	5U
 +
 +/*********************************************
 + * BHV memory region definitions
@@ -7477,12 +7895,23 @@ index 000000000..37573a3ab
 +	uint64_t flags;
 +} __attribute__((__packed__)) bhv_integrity_freeze_arg_t;
 +
++#define BHV_VAS_INTEGRITY_MAX_PT_RANGES 8
++
++typedef struct {
++	uint64_t init_pgd;
++	uint8_t pt_levels;
++	uint8_t padding[3];
++	uint32_t num_ranges;
++	uint64_t ranges[BHV_VAS_INTEGRITY_MAX_PT_RANGES * 2];
++} __attribute__((__packed__)) bhv_integrity_init_ptpg_arg_t;
++
 +typedef struct {
 +	union {
 +		bhv_integrity_create_arg_t bhv_integrity_create_arg;
 +		bhv_integrity_update_arg_t bhv_integrity_update_arg;
 +		bhv_integrity_remove_arg_t bhv_integrity_remove_arg;
 +		bhv_integrity_freeze_arg_t bhv_integrity_freeze_arg;
++		bhv_integrity_init_ptpg_arg_t bhv_integrity_init_ptpg_arg;
 +	};
 +} __attribute__((__packed__)) bhv_integrity_arg_t;
 +
@@ -7496,10 +7925,10 @@ index 000000000..37573a3ab
 +#endif /* __BHV_INTERFACE_INTEGRITY_H__ */
 diff --git include/bhv/interface/patch.h include/bhv/interface/patch.h
 new file mode 100644
-index 000000000..b862189bc
+index 000000000..6ce09b6f3
 --- /dev/null
 +++ include/bhv/interface/patch.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,41 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -7515,8 +7944,10 @@ index 000000000..b862189bc
 +/* BHV VAS PATCH BACKEND OPS */
 +#define BHV_VAS_PATCH_OP_PATCH 0
 +#define BHV_VAS_PATCH_OP_PATCH_NO_CLOSE 1
++#define BHV_VAS_PATCH_OP_VIOLATION 2
 +
 +#define BHV_MAX_PATCH_SZ 32
++#define BHV_MAX_VIOLATION_MSG_SZ 256
 +
 +typedef struct {
 +	uint64_t dest_phys_addr;
@@ -7525,8 +7956,16 @@ index 000000000..b862189bc
 +} __attribute__((__packed__)) bhv_patch_patch_arg_t;
 +
 +typedef struct {
++	uint64_t dest_virt_addr;
++	uint64_t dest_phys_addr;
++	char message[BHV_MAX_VIOLATION_MSG_SZ];
++	uint8_t block;
++} __attribute__((__packed__)) bhv_patch_violation_arg_t;
++
++typedef struct {
 +	union {
 +		bhv_patch_patch_arg_t bhv_patch_patch_arg;
++		bhv_patch_violation_arg_t bhv_patch_violation_arg;
 +	};
 +} __attribute__((__packed__)) bhv_patch_arg_t;
 +
@@ -7670,6 +8109,32 @@ index 000000000..4aae1b3f3
 +#undef LINUX_VERSION_MAJOR
 +#undef LINUX_VERSION_PATCHLEVEL
 +#undef LINUX_VERSION_SUBLEVEL
+diff --git include/bhv/memory_freeze.h include/bhv/memory_freeze.h
+new file mode 100644
+index 000000000..5fb7db1b3
+--- /dev/null
++++ include/bhv/memory_freeze.h
+@@ -0,0 +1,19 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2023 - BedRock Systems Inc
++ * Authors: Tommaso Frassetto <tommaso.frassetto@bedrocksystems.com>
++ */
++
++#pragma once
++
++#ifdef CONFIG_BHV_FREEZE_MEMORY_AFTER_BOOT
++
++void bhv_memory_freeze_init(void);
++
++#else // CONFIG_BHV_FREEZE_MEMORY_AFTER_BOOT
++
++static inline void bhv_memory_freeze_init(void)
++{
++}
++
++#endif // CONFIG_BHV_FREEZE_MEMORY_AFTER_BOOT
+\ No newline at end of file
 diff --git include/bhv/module.h include/bhv/module.h
 new file mode 100644
 index 000000000..b5d14513b
@@ -7866,10 +8331,10 @@ index 000000000..aba8b81d7
 +#endif /* __BHV_PATCH_H__ */
 diff --git include/bhv/start.h include/bhv/start.h
 new file mode 100644
-index 000000000..a41a7873d
+index 000000000..cbeec4fee
 --- /dev/null
 +++ include/bhv/start.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,35 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -7879,9 +8344,12 @@ index 000000000..a41a7873d
 +#ifndef __BHV_START_H__
 +#define __BHV_START_H__
 +
++#include <bhv/bhv.h>
++
 +#ifdef CONFIG_BHV_VAS
 +bool __init bhv_init_platform(void);
 +bool bhv_start(void);
++void bhv_late_start(void);
 +int bhv_start_arch(void);
 +#else /* CONFIG_BHV_VAS */
 +static inline bool bhv_init_platform(void)
@@ -7891,6 +8359,9 @@ index 000000000..a41a7873d
 +static inline bool bhv_start(void)
 +{
 +	return true;
++}
++static inline void bhv_late_start(void)
++{
 +}
 +static inline int bhv_start_arch(void)
 +{
@@ -8066,7 +8537,7 @@ index 000000000..902647976
 +#endif /* __BHV_VAULT_H__ */
 diff --git include/bhv/version.h include/bhv/version.h
 new file mode 100644
-index 000000000..16e1d575c
+index 000000000..682fa2e35
 --- /dev/null
 +++ include/bhv/version.h
 @@ -0,0 +1,13 @@
@@ -8079,12 +8550,12 @@ index 000000000..16e1d575c
 +#ifndef __BHV_VERSION_H__
 +#define __BHV_VERSION_H__
 +
-+#define BHV_VERSION __BHV_VERSION(23, 35, 0)
-+#define BHV_VAS_ABI_VERSION __BHV_VAS_ABI_VERSION(0x23, 0x35, 0, 197)
++#define BHV_VERSION __BHV_VERSION(23, 43, 0)
++#define BHV_VAS_ABI_VERSION __BHV_VAS_ABI_VERSION(0x23, 0x43, 0, 684)
 +
 +#endif //__BHV_VERSION_H__
 diff --git include/linux/filter.h include/linux/filter.h
-index bc6ce4b20..e52d8f0eb 100644
+index bc6ce4b20..aa801e659 100644
 --- include/linux/filter.h
 +++ include/linux/filter.h
 @@ -29,6 +29,8 @@
@@ -8096,15 +8567,17 @@ index bc6ce4b20..e52d8f0eb 100644
  struct sk_buff;
  struct sock;
  struct seccomp_data;
-@@ -829,6 +831,7 @@ static inline void bpf_prog_lock_ro(struct bpf_prog *fp)
+@@ -829,6 +831,9 @@ static inline void bpf_prog_lock_ro(struct bpf_prog *fp)
  	if (!fp->jited) {
  		set_vm_flush_reset_perms(fp);
  		set_memory_ro((unsigned long)fp, fp->pages);
++#ifndef CONFIG_BHV_FREEZE_MEMORY_AFTER_BOOT
 +		bhv_bpf_protect_ro(fp, fp->pages << PAGE_SHIFT);
++#endif // CONFIG_BHV_FREEZE_MEMORY_AFTER_BOOT
  	}
  #endif
  }
-@@ -838,6 +841,7 @@ static inline void bpf_jit_binary_lock_ro(struct bpf_binary_header *hdr)
+@@ -838,6 +843,7 @@ static inline void bpf_jit_binary_lock_ro(struct bpf_binary_header *hdr)
  	set_vm_flush_reset_perms(hdr);
  	set_memory_ro((unsigned long)hdr, hdr->pages);
  	set_memory_x((unsigned long)hdr, hdr->pages);
@@ -8112,13 +8585,14 @@ index bc6ce4b20..e52d8f0eb 100644
  }
  
  static inline struct bpf_binary_header *
-@@ -875,6 +879,9 @@ void __bpf_prog_free(struct bpf_prog *fp);
+@@ -875,6 +881,10 @@ void __bpf_prog_free(struct bpf_prog *fp);
  
  static inline void bpf_prog_unlock_free(struct bpf_prog *fp)
  {
++#ifndef CONFIG_BHV_FREEZE_MEMORY_AFTER_BOOT
 +	if (!fp->jited)
 +		bhv_bpf_unprotect(fp);
-+
++#endif // CONFIG_BHV_FREEZE_MEMORY_AFTER_BOOT
  	__bpf_prog_free(fp);
  }
  
@@ -8201,10 +8675,10 @@ index 64cdf4d7b..6f56c8606 100644
  	#define LSM_HOOK(RET, DEFAULT, NAME, ...) RET (*NAME)(__VA_ARGS__);
 diff --git include/linux/mem_namespace.h include/linux/mem_namespace.h
 new file mode 100644
-index 000000000..4b4771498
+index 000000000..7a1f1407e
 --- /dev/null
 +++ include/linux/mem_namespace.h
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,89 @@
 +#ifndef _LINUX_MEM_NS_H
 +#define _LINUX_MEM_NS_H
 +
@@ -8218,14 +8692,13 @@ index 000000000..4b4771498
 +#define bhv_pr_info(msg, ...)
 +#endif
 +
-+#define BHV_INIT_DOMAIN		0UL
-+#define BHV_INVALID_DOMAIN	(-1UL)
-+
 +struct mem_namespace {
 +	struct kref kref;
 +	struct user_namespace *user_ns;
 +	struct ucounts *ucounts;
 +	struct ns_common ns;
++	struct mem_namespace *parent;
++	unsigned int level;
 +	uint64_t domain;
 +} __randomize_layout;
 +
@@ -8234,7 +8707,8 @@ index 000000000..4b4771498
 +#ifdef CONFIG_MEM_NS
 +static inline struct mem_namespace *get_mem_ns(struct mem_namespace *ns)
 +{
-+	kref_get(&ns->kref);
++	if (ns != &init_mem_ns)
++		kref_get(&ns->kref);
 +	return ns;
 +}
 +
@@ -8242,19 +8716,29 @@ index 000000000..4b4771498
 +
 +static inline void put_mem_ns(struct mem_namespace *ns)
 +{
-+	/*
-+	 * XXX: Determine, whether or not we need to establish nested mem
-+	 * namespaces. If so, we need to traverse all parents and release put
-+	 * the refcount on the namespace.
-+	 */
++	struct mem_namespace *parent = NULL;
 +
-+	if (ns)
-+		kref_put(&ns->kref, free_mem_ns);
++	while (ns != &init_mem_ns) {
++		parent = ns->parent;
++		if (!kref_put(&ns->kref, free_mem_ns))
++			break;
++		ns = parent;
++	}
 +}
 +
 +extern struct mem_namespace *copy_mem_ns(unsigned long flags,
 +					 struct user_namespace *user_ns,
 +					 struct mem_namespace *old_ns);
++
++extern struct mem_namespace *memns_of_task(const struct task_struct *task);
++
++extern bool current_in_same_mem_ns(const struct task_struct *task);
++
++extern bool task_in_ancestor_memns(struct task_struct *task, struct mem_namespace *ns);
++
++static inline unsigned int task_memns_level(struct task_struct *task) {
++	return memns_of_task(task)->level;
++}
 +
 +#else /* CONFIG_MEM_NS */
 +
@@ -8269,6 +8753,16 @@ index 000000000..4b4771498
 +		return ERR_PTR(-EINVAL);
 +
 +	return old_ns;
++}
++
++static inline bool current_in_same_mem_ns(const struct task_struct *)
++{
++	return true;
++}
++
++static inline unsigned int task_memns_level(struct task_struct *task)
++{
++	return 0;
 +}
 +
 +#endif /* CONFIG_MEM_NS */
@@ -8373,20 +8867,21 @@ index 3bac0a8ce..94224cf51 100644
  
  #ifndef __ASSEMBLY__
 diff --git init/main.c init/main.c
-index d8bfe61b5..065152406 100644
+index d8bfe61b5..e70f9a5f1 100644
 --- init/main.c
 +++ init/main.c
-@@ -110,6 +110,9 @@
+@@ -110,6 +110,10 @@
  
  #include <kunit/test.h>
  
 +#include <bhv/bhv.h>
 +#include <bhv/start.h>
++#include <bhv/memory_freeze.h>
 +
  static int kernel_init(void *);
  
  extern void init_IRQ(void);
-@@ -839,6 +842,8 @@ static void __init mm_init(void)
+@@ -839,6 +843,8 @@ static void __init mm_init(void)
  	init_espfix_bsp();
  	/* Should be run after espfix64 is set up. */
  	pti_init();
@@ -8395,6 +8890,35 @@ index d8bfe61b5..065152406 100644
  }
  
  void __init __weak arch_call_rest_init(void)
+@@ -1332,6 +1338,7 @@ static void __init do_pre_smp_initcalls(void)
+ static int run_init_process(const char *init_filename)
+ {
+ 	const char *const *p;
++	int ret;
+ 
+ 	argv_init[0] = init_filename;
+ 	pr_info("Run %s as init process\n", init_filename);
+@@ -1341,7 +1348,10 @@ static int run_init_process(const char *init_filename)
+ 	pr_debug("  with environment:\n");
+ 	for (p = envp_init; *p; p++)
+ 		pr_debug("    %s\n", *p);
+-	return kernel_execve(init_filename, argv_init, envp_init);
++	ret = kernel_execve(init_filename, argv_init, envp_init);
++	if (!ret)
++		bhv_memory_freeze_init();
++	return ret;
+ }
+ 
+ static int try_to_run_init_process(const char *init_filename)
+@@ -1417,6 +1427,8 @@ static int __ref kernel_init(void *unused)
+ 	free_initmem();
+ 	mark_readonly();
+ 
++	bhv_late_start();
++
+ 	/*
+ 	 * Kernel mappings are now finalized - update the userspace page-table
+ 	 * to finalize PTI.
 diff --git kernel/Makefile kernel/Makefile
 index 82e9c8436..0d901c2f6 100644
 --- kernel/Makefile
@@ -8417,13 +8941,27 @@ index 82e9c8436..0d901c2f6 100644
  obj-$(CONFIG_SMP) += stop_machine.o
 diff --git kernel/bhv/Kconfig kernel/bhv/Kconfig
 new file mode 100644
-index 000000000..ec27d2dd6
+index 000000000..2f17eab91
 --- /dev/null
 +++ kernel/bhv/Kconfig
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,73 @@
++config BHV_VAS
++	bool "BHV guest support and VAS LSM"
++	default y
++	depends on (X86_64) || (ARM64 && OF)
++	select VIRTIO_VSOCKETS
++	select VSOCKETS
++	select VIRTIO_VSOCKETS_COMMON
++	select EXT4_FS
++	select XFS_FS
++	select BLOCK
++	help
++	  Say Y if you want to enable the BHV LSM and run Linux in a Virtual
++	  Machine on BHV and benefit from Virtualization-assisted Security.
++
 +config BHV_PANIC_ON_FAIL
-+	def_bool y
 +	bool "BHV guest panics on Hypercall failure"
++	default y
 +	depends on BHV_VAS
 +	help
 +	  Say Y if you want the kernel to panic in the case a
@@ -8432,31 +8970,60 @@ index 000000000..ec27d2dd6
 +	  fails.
 +
 +config BHV_VAS_DEBUG
-+	def_bool n
 +	bool "Build BHV guest support with DEBUG information"
++	default n
 +	depends on BHV_VAS
 +	help
 +	  Say Y if you want to include DEBUG output when using BHV VAS.
 +
 +config BHV_ALLOW_SELINUX_GUEST_ADMIN
-+	def_bool n
 +	bool "Allow the guest to perform SELinux administration if the host disabled guestpolicy support"
++	default n
 +	depends on BHV_VAS
 +	help
 +	  Say Y if you want to allow the guest to perform SELinux administration if the host disabled guestpolicy support.
 +
 +config BHV_CONST_MODPROBE_PATH
-+	def_bool y
 +	bool "Make modprobe_path global constant such that it cannot be updated"
++	default y
 +	depends on BHV_VAS && MODULES
 +	help
 +	  Say Y if you want to make the modprobe_path global constant such that it cannot be updated.
++
++config BHV_FREEZE_MEMORY_AFTER_BOOT
++	bool "Freeze BHV memory regions after system is booted"
++	default n
++	depends on BHV_VAS
++	help
++	  Say Y if you want to the BHV memory regions to be frozen after boot
++
++config BHV_LOCKDOWN
++	bool "Enable the most secure BHV settings (Lockdown)"
++	default n
++	depends on BHV_VAS
++	select BHV_FREEZE_MEMORY_AFTER_BOOT
++	select BHV_PANIC_ON_FAIL
++	select BHV_CONST_MODPROBE_PATH
++	help
++	  Say Y if you want to enable the most secure BHV settings
++
++config BHV_FORCE_STRICT_FILEOPS
++	bool "Forbid unsupported file operations"
++	default n
++	depends on BHV_VAS
++	help
++        Say Y if you want to enable strict checking of file
++        operations objects on file accesses. Unsupported file
++        operations are reported as violations. Without this
++        setting, unsupported file operations undergo a
++        coarse-grained check.
++
 diff --git kernel/bhv/Makefile kernel/bhv/Makefile
 new file mode 100644
-index 000000000..d569ef414
+index 000000000..4e52ef010
 --- /dev/null
 +++ kernel/bhv/Makefile
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,35 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +
 +# Copyright (C) 2022 - BedRock Systems Inc
@@ -8489,6 +9056,10 @@ index 000000000..d569ef414
 +obj-$(CONFIG_BHV_VAS)		+= sysfs_version.o
 +obj-$(CONFIG_BHV_VAS)		+= vmalloc_to_page.o
 +obj-$(CONFIG_BHV_VAS)		+= domain.o
++ifeq ($(CONFIG_BHV_FREEZE_MEMORY_AFTER_BOOT),y)
++obj-$(CONFIG_BHV_VAS)		+= memory_freeze.o
++endif
+\ No newline at end of file
 diff --git kernel/bhv/acl.c kernel/bhv/acl.c
 new file mode 100644
 index 000000000..8706769d4
@@ -9327,10 +9898,10 @@ index 000000000..4f8032464
 +
 diff --git kernel/bhv/domain.c kernel/bhv/domain.c
 new file mode 100644
-index 000000000..cd03e61fb
+index 000000000..6d7399e20
 --- /dev/null
 +++ kernel/bhv/domain.c
-@@ -0,0 +1,666 @@
+@@ -0,0 +1,892 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -9377,6 +9948,10 @@ index 000000000..cd03e61fb
 +#define BHV_DOMAIN_MAP_HYP(arg) BHV_DOMAIN_HYP(BHV_VAS_DOMAIN_OP_MAP, arg)
 +#define BHV_DOMAIN_UNMAP_HYP(arg) BHV_DOMAIN_HYP(BHV_VAS_DOMAIN_OP_UNMAP, arg)
 +#define BHV_DOMAIN_BATCH_HYP(arg) BHV_DOMAIN_HYP(BHV_VAS_DOMAIN_OP_BATCH, arg)
++#define BHV_DOMAIN_REPORT_HYP(arg) 						\
++	BHV_DOMAIN_HYP(BHV_VAS_DOMAIN_OP_REPORT, arg)
++#define BHV_DOMAIN_REPORT_FORCED_MEM_ACCESS_HYP(arg)				\
++	BHV_DOMAIN_HYP(BHV_VAS_DOMAIN_OP_REPORT_FORCED_MEM_ACCESS, arg)
 +
 +#ifdef BHV_VAS_DOMAIN_DEBUG
 +#define BHV_DOMAIN_DEBUG_HYP(arg) BHV_DOMAIN_HYP(BHV_VAS_DOMAIN_OP_DEBUG, arg)
@@ -9385,22 +9960,45 @@ index 000000000..cd03e61fb
 +DEFINE_PER_CPU(uint64_t, bhv_domain_current_domain);
 +EXPORT_PER_CPU_SYMBOL_GPL(bhv_domain_current_domain);
 +
++static DEFINE_XARRAY_ALLOC(xa_domids);
++
 +static bhv_domain_batched_arg_t _batch_area;
 +
 +bool bhv_domain_initialized __ro_after_init = false;
 +
-+int bhv_domain_create(uint64_t *domid)
++static bool isolate __ro_after_init = false;
++static bool disallow_forced_mem_access __ro_after_init = true;
++
++static int __init strong_isolation_setup(char *str)
 +{
-+	int rc = 0;
++	isolate = false;
++
++	if (!strncmp(str, "isolate", 7)) {
++		isolate = true;
++	}
++
++	return 1;
++}
++__setup("strong_isolation=", strong_isolation_setup);
++
++static int __init forced_mem_access_setup(char *str)
++{
++	bool enabled = true;
++
++	if (!kstrtobool(str, &enabled)) {
++		disallow_forced_mem_access = !enabled;
++	}
++
++	return 1;
++}
++__setup("forced_mem_access=", forced_mem_access_setup);
++
++static int bhv_domain_create_isolated_view(uint64_t domid)
++{
++	int rc;
 +	bhv_domain_arg_t arg;
 +
-+	if (!bhv_domain_is_active())
-+		return 0;
-+
-+	if (domid == NULL)
-+		return -EINVAL;
-+
-+	arg.domain.id = BHV_INVALID_DOMAIN;
++	arg.domain.id = domid;
 +
 +	rc = BHV_DOMAIN_CREATE_HYP(&arg);
 +	if (rc) {
@@ -9408,8 +10006,64 @@ index 000000000..cd03e61fb
 +		rc = -EINVAL;
 +	}
 +
-+	// Set domain ID.
-+	*domid = ((volatile bhv_domain_arg_t *)&arg)->domain.id;
++	return rc;
++}
++
++int bhv_domain_create(uint64_t *domid)
++{
++	int rc = 0;
++	unsigned int id;
++
++	if (!bhv_domain_is_active())
++		return 0;
++
++	if (domid == NULL)
++		return -EINVAL;
++
++	/*
++	 * Start allocating domain IDs from ID 1. Domain with ID 0 is reserved.
++	 *
++	 * NOTE: This implementation allocates domain IDs inside of the guest.
++	 * The allocations are done sequentially, yet (unless otherwise required
++	 * by BHV), do not necessarily have to be. These can be passed to BHV
++	 * for management purposes or, if needed, allocated directly by BHV
++	 * instead.
++	 *
++	 * XXX: Consider binding struct mem_namespace (or another datastructure)
++	 * to the allocated ID.
++	 */
++	rc = xa_alloc(&xa_domids, &id, NULL, xa_limit_32b, GFP_KERNEL);
++	if (rc) {
++		pr_err("%s: Cannot allocate new domain ID\n", __FUNCTION__);
++		*domid = BHV_INVALID_DOMAIN;
++		return rc;
++	}
++
++	*domid = (uint64_t)id;
++
++	if (isolate) {
++		rc = bhv_domain_create_isolated_view(*domid);
++		if (rc) {
++			xa_release(&xa_domids, id);
++			*domid = BHV_INVALID_DOMAIN;
++		}
++	}
++
++	return 0;
++}
++
++static int bhv_domain_destroy_isolated_view(uint64_t domid)
++{
++	int rc;
++	bhv_domain_arg_t arg;
++
++	arg.domain.id = domid;
++
++	rc = BHV_DOMAIN_DESTROY_HYP(&arg);
++	if (rc) {
++		pr_err("%s: BHV cannot destroy domain[%llu]\n", __FUNCTION__, domid);
++		rc = -EINVAL;
++	}
 +
 +	return rc;
 +}
@@ -9417,7 +10071,6 @@ index 000000000..cd03e61fb
 +void bhv_domain_destroy(uint64_t domid)
 +{
 +	int rc = 0;
-+	bhv_domain_arg_t arg;;
 +
 +	if (!bhv_domain_is_active())
 +		return;
@@ -9425,18 +10078,37 @@ index 000000000..cd03e61fb
 +	if (domid == BHV_INVALID_DOMAIN)
 +		return;
 +
++	if (isolate)
++		rc = bhv_domain_destroy_isolated_view(domid);
++
++	/*
++	 * Release the allocated domain IDs only if BHV did not return an error,
++	 * or if guest isolation was not enabled in the first place.
++	 */
++	if (!rc)
++		xa_release(&xa_domids, domid);
++}
++
++static int bhv_domain_switch_isolated_view(uint64_t domid)
++{
++	int rc = 0;
++	bhv_domain_arg_t arg;
++
 +	arg.domain.id = domid;
 +
-+	rc = BHV_DOMAIN_DESTROY_HYP(&arg);
-+	if (rc)
-+		pr_err("%s: BHV cannot destroy domain[%llu]\n", __FUNCTION__,
++	rc = BHV_DOMAIN_SWITCH_HYP(&arg);
++	if (rc) {
++		pr_err("%s: BHV cannot switch to domain[%llu]\n", __FUNCTION__,
 +		       domid);
++		rc = -EINVAL;
++	}
++
++	return rc;
 +}
 +
 +int bhv_domain_switch(uint64_t domid)
 +{
 +	int rc = 0;
-+	bhv_domain_arg_t arg;
 +
 +	if (!bhv_domain_is_active())
 +		return 0;
@@ -9447,13 +10119,10 @@ index 000000000..cd03e61fb
 +	if (domid == this_cpu_read(bhv_domain_current_domain))
 +		return 0;
 +
-+	arg.domain.id = domid;
-+
-+	rc = BHV_DOMAIN_SWITCH_HYP(&arg);
-+	if (rc) {
-+		pr_err("%s: BHV cannot switch to domain[%llu]\n", __FUNCTION__,
-+		       domid);
-+		rc = -EINVAL;
++	if (isolate) {
++		rc = bhv_domain_switch_isolated_view(domid);
++		if (rc)
++			return rc;
 +	}
 +
 +	this_cpu_write(bhv_domain_current_domain, domid);
@@ -9469,6 +10138,9 @@ index 000000000..cd03e61fb
 +	bhv_domain_arg_t arg;
 +
 +	if (!bhv_domain_is_active())
++		return 0;
++
++	if (!isolate)
 +		return 0;
 +
 +	if (mm == NULL)
@@ -9673,12 +10345,15 @@ index 000000000..cd03e61fb
 +static int bhv_domain_batch_op(bhv_domain_batched_entry_arg_t *arg)
 +{
 +	int rc = 0;
-+	bhv_domain_batched_arg_t *batch_area = &_batch_area;
 +	uint32_t dest;
 +	uint32_t invalid_state = BHV_VAS_DOMAIN_BATCH_STATE_INVALID;
-+	unsigned long flags;
++	unsigned long flags = 0;
++	bhv_domain_batched_arg_t *batch_area = &_batch_area;
 +
 +	if (!bhv_domain_is_active())
++		return 0;
++
++	if (!isolate)
 +		return 0;
 +
 +	atomic_set(&arg->state, BHV_VAS_DOMAIN_BATCH_STATE_INVALID);
@@ -9701,7 +10376,6 @@ index 000000000..cd03e61fb
 +		panic("Could not set valid state!");
 +	}
 +
-+	// reenable interrupts
 +	local_irq_restore(flags);
 +
 +	return rc;
@@ -9714,6 +10388,9 @@ index 000000000..cd03e61fb
 +	bhv_domain_batched_entry_arg_t arg;
 +
 +	if (!bhv_domain_is_active())
++		return 0;
++
++	if (!isolate)
 +		return 0;
 +
 +	atomic_set(&arg.state, BHV_VAS_DOMAIN_BATCH_STATE_INVALID);
@@ -9733,6 +10410,9 @@ index 000000000..cd03e61fb
 +int bhv_domain_map_kernel(struct mm_struct *mm, uint64_t pfn, uint64_t nr_pages,
 +			  bool read, bool write, bool exec)
 +{
++	if (!isolate)
++		return 0;
++
 +	return bhv_domain_batch_map(BHV_VAS_DOMAIN_OP_MAP, mm, pfn, nr_pages,
 +				    read, write, exec, true);
 +}
@@ -9740,6 +10420,9 @@ index 000000000..cd03e61fb
 +void bhv_domain_set_pte_at(struct mm_struct *mm, unsigned long addr,
 +			   pte_t *ptep, pte_t pte)
 +{
++	if (!isolate)
++		return;
++
 +#ifdef CONFIG_ARCH_HAS_PTE_DEVMAP
 +	if (pte_devmap(pte))
 +		return;
@@ -9787,6 +10470,9 @@ index 000000000..cd03e61fb
 +{
 +	uint32_t bhv_domain_op = BHV_VAS_DOMAIN_OP_MAP;
 +
++	if (!isolate)
++		return;
++
 +#ifdef CONFIG_ARCH_HAS_PTE_DEVMAP
 +	if (pmd_devmap(pmd))
 +		return;
@@ -9806,7 +10492,6 @@ index 000000000..cd03e61fb
 +			pmd_pfn(pmd), 512, pmd_read(pmd),
 +			pmd_write(pmd), pmd_exec(pmd),
 +			false);
-+
 +}
 +EXPORT_SYMBOL(bhv_domain_set_pmd_at);
 +
@@ -9814,6 +10499,9 @@ index 000000000..cd03e61fb
 +			   pud_t *pudp, pud_t pud)
 +{
 +	uint32_t bhv_domain_op = BHV_VAS_DOMAIN_OP_MAP;
++
++	if (!isolate)
++		return;
 +
 +#ifdef CONFIG_ARCH_HAS_PTE_DEVMAP
 +	if (pud_devmap(pud))
@@ -9858,6 +10546,9 @@ index 000000000..cd03e61fb
 +void bhv_domain_clear_pte(struct mm_struct *mm, unsigned long addr, pte_t *ptep,
 +			  pte_t pte)
 +{
++	if (!isolate)
++		return;
++
 +#ifdef CONFIG_ARCH_HAS_PTE_DEVMAP
 +	if (pte_devmap(pte))
 +		return;
@@ -9873,6 +10564,9 @@ index 000000000..cd03e61fb
 +void bhv_domain_clear_pmd(struct mm_struct *mm, unsigned long addr, pmd_t *pmdp,
 +			  pmd_t pmd)
 +{
++	if (!isolate)
++		return;
++
 +#ifdef CONFIG_ARCH_HAS_PTE_DEVMAP
 +	if (pmd_devmap(pmd))
 +		return;
@@ -9891,6 +10585,9 @@ index 000000000..cd03e61fb
 +void bhv_domain_clear_pud(struct mm_struct *mm, unsigned long addr, pud_t *pudp,
 +			  pud_t pud)
 +{
++	if (!isolate)
++		return;
++
 +#ifdef CONFIG_ARCH_HAS_PTE_DEVMAP
 +	if (pud_devmap(pud))
 +		return;
@@ -9915,6 +10612,9 @@ index 000000000..cd03e61fb
 +	if (!bhv_domain_is_active())
 +		return;
 +
++	if (!isolate)
++		return;
++
 +	arg.msg_type = BHV_VAS_DOMAIN_DEBUG_DESTROY_PGD;
 +	arg.domain.id = bhv_get_domain(tsk);
 +	arg.domain.pgd = bhv_virt_to_phys(bhv_domain_get_user_pgd(mm->pgd));
@@ -9934,12 +10634,98 @@ index 000000000..cd03e61fb
 +	if (!bhv_domain_is_active())
 +		return;
 +
++	if (!isolate)
++		return;
++
 +	atomic_set(&arg.state, BHV_VAS_DOMAIN_BATCH_STATE_INVALID);
 +	arg.op = BHV_VAS_DOMAIN_OP_PGD_DESTROY;
 +	arg.domain.id = bhv_get_domain(tsk);
 +	arg.domain.pgd = bhv_virt_to_phys(bhv_domain_get_user_pgd(mm->pgd));
 +
 +	bhv_domain_batch_op(&arg);
++}
++
++int bhv_domain_report(const struct task_struct *t,
++		      const struct mm_struct *mm_target,
++		      const struct vm_area_struct *vma,
++		      unsigned int gup_flags)
++{
++	int rc = 0;
++	bhv_domain_arg_t arg = { 0 };
++
++	if (!bhv_domain_is_active())
++		return 0;
++
++	/*
++	 * XXX: Consider enabling this hypercall even if the system
++	 * configuration is set to strong_isolation=isolate.
++	 */
++	if (isolate)
++		return 0;
++
++	arg.report.domain_src.id = bhv_get_domain(t);
++	/* XXX: THIS IS NOT IDEAL. CONSIDER REMOVING PGDs COMPLETELY FROM THE STRUCT! */
++	arg.report.domain_src.pgd = bhv_virt_to_phys(bhv_domain_get_user_pgd(t->active_mm->pgd));
++	arg.report.domain_target.id = bhv_get_domain(mm_target->owner);
++	arg.report.domain_target.pgd = bhv_virt_to_phys(bhv_domain_get_user_pgd(mm_target->pgd));
++	arg.report.range.start = vma->vm_start;
++	arg.report.range.end = vma->vm_end;
++	arg.report.write = ((gup_flags & FOLL_WRITE) || (gup_flags & FOLL_FORCE));
++
++	rc = BHV_DOMAIN_REPORT_HYP(&arg);
++	if (rc) {
++		pr_err("[-BHV-] %s: an error occurred during the REPORT hypercall\n", __FUNCTION__);
++		return rc;
++	}
++
++	if (arg.report.block)
++		rc = -EPERM;
++
++#if 0
++	pr_info("[-BHV-] %s: dom[%llu] -> dom[%llu] write=%d block=%d", __FUNCTION__, arg.report.domain_src.id, arg.report.domain_target.id, arg.report.write, arg.report.block);
++#endif
++
++	return rc;
++}
++
++bool bhv_forced_mem_access_permitted(struct vm_area_struct *vma, bool write, bool foreign)
++{
++	int rc = 0;
++	bhv_domain_arg_t arg = { 0 };
++	struct mm_struct *mm_target = vma->vm_mm;
++
++	if (!bhv_domain_is_active())
++		return true;
++
++	/*
++	 * XXX: Consider enabling this hypercall even if the system
++	 * configuration is set to strong_isolation=isolate.
++	 */
++	if (isolate)
++		return true;
++
++	if (!disallow_forced_mem_access)
++		return true;
++
++	arg.report.domain_src.id = bhv_get_domain(current);
++	/* XXX: THIS IS NOT IDEAL. CONSIDER REMOVING PGDs COMPLETELY FROM THE STRUCT! */
++	arg.report.domain_src.pgd = bhv_virt_to_phys(bhv_domain_get_user_pgd(current->active_mm->pgd));
++	arg.report.domain_target.id = bhv_get_domain(mm_target->owner);
++	arg.report.domain_target.pgd = bhv_virt_to_phys(bhv_domain_get_user_pgd(mm_target->pgd));
++	arg.report.range.start = vma->vm_start;
++	arg.report.range.end = vma->vm_end;
++	arg.report.write = write;
++
++	rc = BHV_DOMAIN_REPORT_FORCED_MEM_ACCESS_HYP(&arg);
++	if (rc) {
++		pr_err("[-BHV-] %s: an error occurred during the REPORT hypercall\n", __FUNCTION__);
++		return false;
++	}
++
++	pr_info("[-BHV-] %s: vma @ [0x%lx:0x%lx] write=%d", __FUNCTION__,
++	        vma->vm_start, vma->vm_end, write);
++
++	return !arg.report.block;
 +}
 +
 +static void __init bhv_domain_init(void)
@@ -9959,30 +10745,41 @@ index 000000000..cd03e61fb
 +#endif
 +
 +	arg->config.pti = (uint64_t)pti_active;
++	arg->config.isolate = (uint64_t)isolate;
 +	arg->config.batched_region = bhv_virt_to_phys(&_batch_area);
 +
 +	rc = BHV_DOMAIN_CONFIGURE_HYP(arg);
 +	if (rc) {
 +		pr_err("%s: BHV cannot configure StrongIsolation\n",
 +		       __FUNCTION__);
-+	} else {
-+		bhv_domain_initialized = true;
++		return;
 +	}
++
++	bhv_domain_initialized = true;
 +}
 +
 +void __init bhv_domain_mm_init(void)
 +{
++	int rc;
 +	int cpu;
 +	uint32_t i;
 +
 +	if (!bhv_domain_is_enabled())
 +		return;
 +
++	rc = xa_reserve_bh(&xa_domids, BHV_INIT_DOMAIN, GFP_KERNEL);
++	if (rc) {
++		bhv_fail("%s: BHV: cannot reserve domain ID %lu", __FUNCTION__, BHV_INIT_DOMAIN);
++		return;
++	}
++
 +	bhv_domain_init();
 +
 +	for_each_possible_cpu (cpu) {
 +		per_cpu(bhv_domain_current_domain, cpu) = 0;
 +	}
++
++	/* Reserve the ID of the first, static memory namespace. */
 +
 +	atomic64_set(&_batch_area.info, 0);
 +
@@ -9999,10 +10796,10 @@ index 000000000..cd03e61fb
 +#endif /* CONFIG_MEM_NS */
 diff --git kernel/bhv/file_protection.c kernel/bhv/file_protection.c
 new file mode 100644
-index 000000000..25d92c296
+index 000000000..816545717
 --- /dev/null
 +++ kernel/bhv/file_protection.c
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,126 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -10027,11 +10824,9 @@ index 000000000..25d92c296
 +
 +#include <bhv/file_protection.h>
 +
-+
 +bhv_file_protection_config_t bhv_file_protection_config __ro_after_init = { 0 };
 +
 +struct kmem_cache *bhv_file_protection_violation_cache;
-+
 +void __init bhv_file_protection_init(void)
 +{
 +	unsigned long r;
@@ -10082,18 +10877,25 @@ index 000000000..25d92c296
 +#endif // VASKM
 +}
 +
-+bool bhv_block_read_only_file_write(const char *target)
++bool bhv_block_read_only_file_write(const char *target, bool dirtycred)
 +{
 +	unsigned long r;
 +	bool rv;
 +	bhv_file_protection_violation_t *volatile violation = NULL;
-+
-+	if (!bhv_read_only_file_protection_is_enabled())
-+		return false;
++	u32 bhv_hypercall_op;
 +
 +	// Prepare hypercall
++	if (!dirtycred) {
++		bhv_hypercall_op =
++			BHV_VAS_FILE_PROTECTION_OP_VIOLATION_READ_ONLY_FILE_PROTECTION;
++	} else {
++		bhv_hypercall_op =
++			BHV_VAS_FILE_PROTECTION_OP_VIOLATION_DIRTYCRED;
++	}
++
 +	violation = kmem_cache_alloc(bhv_file_protection_violation_cache,
 +				     GFP_KERNEL);
++
 +	if (violation == NULL) {
 +		bhv_fail("Unable to allocate file protection violation");
 +		return true;
@@ -10110,16 +10912,15 @@ index 000000000..25d92c296
 +	violation->name = bhv_virt_to_phys((void *)target);
 +
 +	// Hypercall
-+	r = bhv_hypercall_vas(
-+		BHV_VAS_BACKEND_FILE_PROTECTION,
-+		BHV_VAS_FILE_PROTECTION_OP_VIOLATION_READ_ONLY_FILE_PROTECTION,
-+		violation);
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_FILE_PROTECTION, bhv_hypercall_op,
++			      violation);
 +	if (r) {
 +		pr_err("file protection violation hypercall failed");
 +		kmem_cache_free(bhv_file_protection_violation_cache, violation);
 +		return true;
 +	}
 +
++	/* Note: in case of dirtycred, "block" halts the guest with a panic */
 +	// Read block and free
 +	rv = (bool)violation->block;
 +	kmem_cache_free(bhv_file_protection_violation_cache, violation);
@@ -10128,10 +10929,10 @@ index 000000000..25d92c296
 \ No newline at end of file
 diff --git kernel/bhv/fileops_protection.c kernel/bhv/fileops_protection.c
 new file mode 100644
-index 000000000..4a6316da3
+index 000000000..4f9063b80
 --- /dev/null
 +++ kernel/bhv/fileops_protection.c
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,245 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -10141,9 +10942,11 @@ index 000000000..4a6316da3
 +#include <bhv/bhv_print.h>
 +
 +#include <linux/slab.h>
++#include <linux/module.h>
 +#include <uapi/linux/magic.h>
 +#include <linux/sort.h>
 +#include <linux/bsearch.h>
++#include <linux/moduleparam.h>
 +
 +#include <bhv/bhv.h>
 +#include <bhv/event.h>
@@ -10153,12 +10956,23 @@ index 000000000..4a6316da3
 +
 +#include <bhv/fileops_protection.h>
 +#include <bhv/fileops_internal.h>
++#include <bhv/guestlog.h>
++
++#include <asm/sections.h>
 +
 +#ifndef VASKM // inside kernel tree
 +#include <bhv/kernel-kln.h>
 +#else // out of tree
 +#include <kln.h>
 +#endif // VASKM
++
++static bool bhv_strict_fileops = IS_ENABLED(CONFIG_BHV_FORCE_STRICT_FILEOPS);
++module_param(bhv_strict_fileops, bool_enable_only, 0);
++
++bool bhv_strict_fileops_enforced(void)
++{
++	return bhv_strict_fileops;
++}
 +
 +struct kmem_cache *bhv_fileops_protection_violation_cache;
 +
@@ -10198,6 +11012,11 @@ index 000000000..4a6316da3
 +	case PROC_SUPER_MAGIC:
 +		op = BHV_VAS_FILEOPS_PROTECTION_PROC;
 +		break;
++	case CGROUP2_SUPER_MAGIC:
++		fallthrough;
++	case SYSFS_MAGIC:
++		op = BHV_VAS_FILEOPS_PROTECTION_SYSFS;
++		break;
 +	default:
 +		op = BHV_VAS_FILEOPS_PROTECTION_UNSUPPORTED;
 +	}
@@ -10205,11 +11024,32 @@ index 000000000..4a6316da3
 +	return op;
 +}
 +
-+bool bhv_block_fileops(const char *target, u8 fops_type, bool is_dir, const void* fops_ptr)
++bool bhv_fileops_is_ro(u64 f_op)
++{
++	struct module *mod;
++	if (f_op >= KLN_SYM(__start_rodata) && f_op < KLN_SYM(__end_rodata))
++		return true;
++
++	preempt_disable();
++	mod = __module_address(f_op);
++	preempt_enable();
++	if (mod == NULL)
++		return false;
++
++	if (f_op >= (u64)mod->core_layout.base + mod->core_layout.text_size &&
++	    f_op < (u64)mod->core_layout.base + mod->core_layout.ro_size) {
++		return true;
++	}
++
++	return false;
++}
++
++bool bhv_block_fileops(const char *target, u8 fops_type, bool is_dir,
++		       const void *fops_ptr)
 +{
 +	unsigned long err;
 +	bool retval;
-+	bhv_fileops_protection_violation_t *violation;
++	bhv_fileops_protection_violation_t *volatile violation;
 +	size_t path_sz;
 +	int rv;
 +
@@ -10255,12 +11095,12 @@ index 000000000..4a6316da3
 +		return true;
 +	}
 +
++	// block is set by host, might need to be volatile when set in guest
 +	retval = (bool)violation->block;
 +	kmem_cache_free(bhv_fileops_protection_violation_cache, violation);
 +
 +	return retval;
 +}
-+
 +
 +#ifndef VASKM // inside kernel tree
 +
@@ -10278,7 +11118,6 @@ index 000000000..4a6316da3
 +};
 +
 +#define init_fileops_data()
-+
 +
 +#else // out of tree
 +fops_t *fileops_map;
@@ -10299,11 +11138,11 @@ index 000000000..4a6316da3
 +	BUG_ON(!PAGE_ALIGNED(fileops_map));
 +
 +#define KFOPS(sym) KLN_SYMBOL_P(const struct file_operations *, sym)
-+#define FOPS_MAP(_, idx, file_ops, dir_ops)                                    \
-+	fileops_map[idx][0] = KFOPS(file_ops);                                 \
++#define FOPS_MAP(_, idx, file_ops, dir_ops)    \
++	fileops_map[idx][0] = KFOPS(file_ops); \
 +	fileops_map[idx][1] = KFOPS(dir_ops);
-+#define FOPS_MAP_DIRNULL(_, idx, file_ops)                                     \
-+	fileops_map[idx][0] = KFOPS(file_ops);                                 \
++#define FOPS_MAP_DIRNULL(_, idx, file_ops)     \
++	fileops_map[idx][0] = KFOPS(file_ops); \
 +	fileops_map[idx][1] = NULL;
 +#include <bhv/fileops_internal_fopsmap.h>
 +
@@ -10314,7 +11153,6 @@ index 000000000..4a6316da3
 +	BUG_ON(c != ARRAY_SIZE(proc_fops));
 +}
 +#endif // VASKM
-+
 +
 +int cmp_fileops(const void *a_ptr, const void *b_ptr)
 +{
@@ -10612,10 +11450,10 @@ index 000000000..b7c26fdd2
 \ No newline at end of file
 diff --git kernel/bhv/guestlog.c kernel/bhv/guestlog.c
 new file mode 100644
-index 000000000..355005640
+index 000000000..383b5bf4d
 --- /dev/null
 +++ kernel/bhv/guestlog.c
-@@ -0,0 +1,365 @@
+@@ -0,0 +1,401 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -10830,9 +11668,9 @@ index 000000000..355005640
 +	msg->process_exec.pid = pid;
 +	msg->process_exec.parent_pid = parent_pid;
 +	strscpy(msg->process_exec.name, comm, TASK_COMM_LEN);
-+	env_offset =
-+		bhv_get_args_env(bprm, 0, bprm->argc, msg->process_exec.args,
-+				 BHV_LOG_PROC_EXEC_ARGS_ENV_SZ);
++	env_offset = bhv_get_args_env(bprm, 0, bprm->argc,
++				      msg->process_exec.args,
++				      BHV_LOG_PROC_EXEC_ARGS_ENV_SZ);
 +	bhv_get_args_env(bprm, env_offset, bprm->envc, msg->process_exec.env,
 +			 BHV_LOG_PROC_EXEC_ARGS_ENV_SZ);
 +	sz = bhv_guestlog_calc_msg_sz(msg->header.type, 0);
@@ -10932,6 +11770,42 @@ index 000000000..355005640
 +	msg->kernel_access.address = addr;
 +	msg->kernel_access.type = type;
 +	sz = bhv_guestlog_calc_msg_sz(msg->header.type, 0);
++	BUG_ON(sz > BHV_GUESTLOG_MAX_MSG_SZ);
++	msg->header.sz = sz;
++
++	// Send
++	return bhv_guestconn_send(BHV_GUESTCONN_MSG_TYPE_LOG, guestconn_msg,
++				  sz);
++}
++
++int bhv_guestlog_log_fops_unknown(uint32_t magic, const char *pathname,
++				  uint64_t type, const void *fops_ptr)
++{
++	guestconn_msg_t *guestconn_msg;
++	guestlog_msg_t *msg;
++	size_t sz;
++
++	guestconn_msg = bhv_guestconn_alloc_msg();
++	if (!guestconn_msg)
++		return -ENOMEM;
++
++	msg = (guestlog_msg_t *)guestconn_msg->body;
++
++	// Setup msg
++	msg->header.type = BHV_GUESTLOG_MSG_TYPE_FOPS_UNKNOWN;
++
++	if (populate_event_context(&msg->context, true)) {
++		pr_err("%s: BHV cannot retrieve event context", __FUNCTION__);
++	}
++
++	msg->fops_unknown.magic = (u64)magic;
++	msg->fops_unknown.type = type;
++	msg->fops_unknown.address = (u64)fops_ptr;
++	strscpy(msg->fops_unknown.path, pathname,
++		BHV_GUESTLOG_MAX_MSG_DATA_SZ -
++			offsetof(guestlog_msg_fops_unknown_t, path));
++	sz = bhv_guestlog_calc_msg_sz(msg->header.type,
++				      strlen(msg->fops_unknown.path) + 1);
 +	BUG_ON(sz > BHV_GUESTLOG_MAX_MSG_SZ);
 +	msg->header.sz = sz;
 +
@@ -11164,10 +12038,10 @@ index 000000000..d9e71155d
 +}
 diff --git kernel/bhv/integrity.c kernel/bhv/integrity.c
 new file mode 100644
-index 000000000..7a0a6469d
+index 000000000..5bfded02f
 --- /dev/null
 +++ kernel/bhv/integrity.c
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,290 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -11176,6 +12050,8 @@ index 000000000..7a0a6469d
 + */
 +
 +#include <linux/types.h>
++#include <linux/list.h>
++#include <linux/module.h>
 +#include <asm/io.h>
 +
 +#include <bhv/bhv.h>
@@ -11217,6 +12093,82 @@ index 000000000..7a0a6469d
 +
 +	kmem_cache_free(bhv_integrity_arg_cache, bhv_arg);
 +	return rv;
++}
++
++#ifndef VASKM // inside kernel tree
++#include <bhv/kernel-kln.h>
++extern struct mutex module_mutex;
++extern struct list_head modules;
++#else // out of tree
++#include <kln.h>
++#endif //VASKM
++
++static void lock_all_modules(void)
++{
++	static bool all_modules_locked = false;
++	struct module *mptr;
++
++	if (all_modules_locked)
++		return;
++
++	mutex_lock(KLN_SYMBOL_P(struct mutex *, module_mutex));
++
++	list_for_each_entry (mptr, KLN_SYMBOL_P(struct list_head *, modules),
++			     list) {
++		if (mptr != THIS_MODULE) {
++			if (!try_module_get(mptr)) {
++				printk(KERN_WARNING
++				       "%s: Cannot lock module %s\n",
++				       __FUNCTION__, mptr->name);
++			}
++		}
++	}
++
++	mutex_unlock(KLN_SYMBOL_P(struct mutex *, module_mutex));
++	all_modules_locked = true;
++	return;
++}
++
++bool bhv_allow_kmod_loads = true;
++bool bhv_allow_patch = true;
++bool bhv_integrity_freeze_create_currently_frozen = false;
++bool bhv_integrity_freeze_update_currently_frozen = false;
++bool bhv_integrity_freeze_remove_currently_frozen = false;
++bool bhv_integrity_freeze_patch_currently_frozen = false;
++
++int bhv_enable_integrity_freeze_flag(uint64_t flags, bool skip_locks)
++{
++	int ret;
++	if (!skip_locks) {
++		if (flags & BHV_FREEZE_FLAGS_DENY_CREATE ||
++		    flags & BHV_FREEZE_FLAGS_DENY_UPDATE ||
++		    flags & BHV_FREEZE_FLAGS_DENY_REMOVE ||
++		    flags & BHV_FREEZE_FLAGS_DENY_PATCH) {
++			bhv_allow_kmod_loads = false;
++			lock_all_modules();
++		}
++		if (flags & BHV_FREEZE_FLAGS_DENY_PATCH) {
++			bhv_allow_patch = false;
++		}
++	} else {
++		printk(KERN_WARNING "%s: Not restricting frozen operations\n",
++		       __FUNCTION__);
++	}
++
++	ret = bhv_integrity_freeze_events(flags);
++	
++	if (!ret) {
++		if (flags & BHV_FREEZE_FLAGS_DENY_CREATE)
++			bhv_integrity_freeze_create_currently_frozen = true;
++		if (flags & BHV_FREEZE_FLAGS_DENY_UPDATE)
++			bhv_integrity_freeze_update_currently_frozen = true;
++		if (flags & BHV_FREEZE_FLAGS_DENY_REMOVE)
++			bhv_integrity_freeze_remove_currently_frozen = true;
++		if (flags & BHV_FREEZE_FLAGS_DENY_PATCH)
++			bhv_integrity_freeze_patch_currently_frozen = true;
++	}
++
++	return ret;
 +}
 +
 +int bhv_create_kern_phys_mem_region_hyp(uint64_t owner,
@@ -11313,6 +12265,148 @@ index 000000000..7a0a6469d
 +	kmem_cache_free(bhv_integrity_arg_cache, bhv_arg);
 +	return rv;
 +}
++
++static uint64_t _ptpg_pgd_offset __ro_after_init;
++static uint64_t _ptpg_pgd_value __ro_after_init;
++static atomic_t _ptpg_ready __ro_after_init = ATOMIC_INIT(0);
++
++void __init_km bhv_start_ptpg(void)
++{
++	_ptpg_pgd_offset = 0;
++	_ptpg_pgd_value = 0;
++
++	if (!bhv_integrity_pt_prot_is_enabled()) {
++		return;
++	}
++
++	bhv_get_pt_protect_pgd_data(&_ptpg_pgd_offset, &_ptpg_pgd_value);
++
++	atomic_inc(&_ptpg_ready);
++}
++
++int bhv_integrity_init_ptpg(void)
++{
++	unsigned long r;
++	bhv_integrity_init_ptpg_arg_t *arg;
++
++	if (!bhv_integrity_pt_prot_is_enabled()) {
++		return 0;
++	}
++
++	BUG_ON(sizeof(bhv_integrity_init_ptpg_arg_t) > PAGE_SIZE);
++
++	arg = (bhv_integrity_init_ptpg_arg_t *)__get_free_pages(GFP_KERNEL, 0);
++	if (arg == NULL) {
++		bhv_fail("Unable to allocate pgpt init arg");
++		return -ENOMEM;
++	}
++
++	bhv_get_pt_protect_data(arg);
++
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_INTEGRITY,
++			      BHV_VAS_INTEGRITY_OP_PTPG_INIT, arg);
++	if (r) {
++		free_pages((unsigned long)arg, 0);
++		return -EINVAL;
++	}
++
++	free_pages((unsigned long)arg, 0);
++	return 0;
++}
++
++void bhv_pt_protect_check_pgd(struct mm_struct *mm)
++{
++	unsigned long r;
++	bool success;
++
++	if (!bhv_integrity_pt_prot_is_enabled() || !atomic_read(&_ptpg_ready)) {
++		return;
++	}
++	success = bhv_pt_protect_check_pgd_arch(mm, _ptpg_pgd_offset,
++						_ptpg_pgd_value);
++	if (!success) {
++		r = bhv_hypercall_vas(BHV_VAS_BACKEND_INTEGRITY,
++				      BHV_VAS_INTEGRITY_OP_PTPG_REPORT, NULL);
++		if (r) {
++			pr_err("BHV: error reporting pt violation to host!");
++		}
++	}
++}
+diff --git kernel/bhv/memory_freeze.c kernel/bhv/memory_freeze.c
+new file mode 100644
+index 000000000..083105ffc
+--- /dev/null
++++ kernel/bhv/memory_freeze.c
+@@ -0,0 +1,68 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2023 - BedRock Systems Inc
++ * Authors: Tommaso Frassetto <tommaso.frassetto@bedrocksystems.com>
++ */
++
++#include <linux/delay.h>
++#include <linux/kernel.h>
++#include <linux/kthread.h>
++#include <linux/printk.h>
++#include <linux/umh.h>
++
++#include <bhv/integrity.h>
++
++#ifdef CONFIG_STATIC_USERMODEHELPER
++#error CONFIG_STATIC_USERMODEHELPER not supported
++#endif
++#ifdef CONFIG_BPF_JIT
++#error CONFIG_BPF_JIT not supported
++#endif
++
++static int bhv_memory_freeze_main(void *_)
++{
++	static const __section(".rodata") char *const argv[] = {
++		"/usr/bin/systemctl", "is-system-running", NULL
++	};
++	static const __section(".rodata") char *const envp[] = {
++		"HOME=/", "PATH=/sbin:/bin:/usr/sbin:/usr/bin", NULL
++	};
++	int ret;
++
++	while (true) {
++		msleep(500);
++
++		ret = call_usermodehelper(
++			argv[0], (char **)argv, (char **)envp,
++			UMH_WAIT_PROC /* wait for the process to complete */);
++
++		if (ret == -ENOENT) {
++			pr_info("%s: Non-systemd filesystem\n", __FUNCTION__);
++			msleep(120000);
++			pr_info("%s: Assuming system is up\n", __FUNCTION__);
++			return bhv_enable_integrity_freeze_flag(
++				BHV_FREEZE_FLAGS_DENY_CREATE |
++					BHV_FREEZE_FLAGS_DENY_UPDATE |
++					BHV_FREEZE_FLAGS_DENY_REMOVE,
++				false);
++		}
++
++		if (ret == 0) {
++			pr_info("%s: System up\n", __FUNCTION__);
++			return bhv_enable_integrity_freeze_flag(
++				BHV_FREEZE_FLAGS_DENY_CREATE |
++					BHV_FREEZE_FLAGS_DENY_UPDATE |
++					BHV_FREEZE_FLAGS_DENY_REMOVE,
++				false);
++		}
++	}
++}
++
++void bhv_memory_freeze_init(void)
++{
++	if (ERR_PTR(-ENOMEM) ==
++	    kthread_run(bhv_memory_freeze_main, NULL, "memory_freeze")) {
++		panic("%s: Could not create memory_freeze thread",
++		      __FUNCTION__);
++	}
++}
+\ No newline at end of file
 diff --git kernel/bhv/module.c kernel/bhv/module.c
 new file mode 100644
 index 000000000..7df13540f
@@ -12033,10 +13127,10 @@ index 000000000..316f94143
 +
 diff --git kernel/bhv/patch_bpf.c kernel/bhv/patch_bpf.c
 new file mode 100644
-index 000000000..ba727b85c
+index 000000000..54a32387f
 --- /dev/null
 +++ kernel/bhv/patch_bpf.c
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,235 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -12139,9 +13233,17 @@ index 000000000..ba727b85c
 +	}
 +
 +	if (!bhv_bpf_check_write(dst, sz)) {
-+		pr_warn("BHV: Attempt to overwite non-BPF region!\n");
-+		rv = -EINVAL;
-+		goto out;
++		pr_warn("BHV: Attempt to overwrite non-BPF region!\n");
++
++		if (bhv_patch_violation_hypercall(
++			    dst, "Attempt to overwrite non-BPF region",
++			    bhv_arg_ptr)) {
++			// Block attempt.
++			rv = -EINVAL;
++			goto out;
++		}
++
++		// Allow change.
 +	}
 +
 +	rv = bhv_patch_hypercall(dst, src, sz, false, bhv_arg_ptr);
@@ -12170,9 +13272,17 @@ index 000000000..ba727b85c
 +	}
 +
 +	if (!bhv_bpf_check_write(dst, sz)) {
-+		pr_warn("BHV: Attempt to overwite non-BPF region!\n");
-+		rv = -EINVAL;
-+		goto out;
++		pr_warn("BHV: Attempt to overwrite non-BPF region!\n");
++
++		if (bhv_patch_violation_hypercall(
++			    dst, "Attempt to overwrite non-BPF region",
++			    bhv_arg_ptr)) {
++			// Block attempt.
++			rv = -EINVAL;
++			goto out;
++		}
++
++		// Allow change
 +	}
 +
 +	for (size_t i = 0; i < BHV_MAX_PATCH_SZ; i++)
@@ -12259,10 +13369,10 @@ index 000000000..ba727b85c
 \ No newline at end of file
 diff --git kernel/bhv/patch_jump_label.c kernel/bhv/patch_jump_label.c
 new file mode 100644
-index 000000000..0b8409b1a
+index 000000000..628e02222
 --- /dev/null
 +++ kernel/bhv/patch_jump_label.c
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,315 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -12351,25 +13461,144 @@ index 000000000..0b8409b1a
 +	return enabled ^ branch;
 +}
 +
-+bool __bhv_text validate_jmp_labels(struct jump_entry *entry,
-+				    const void *opcode, size_t len)
++typedef enum {
++	FAIL = 0,
++	SKIP,
++	SUCCESS,
++} jump_label_validation_t;
++
++jump_label_validation_t __bhv_text validate_jmp_labels(struct jump_entry *entry,
++						       const void *opcode,
++						       size_t len,
++						       char *error_msg)
 +{
 +	struct bhv_static_key_mod *i;
++	unsigned long addr = (unsigned long)jump_entry_code(entry);
++	struct jump_entry *iter;
++	unsigned long tmp_addr;
 +
 +	if (entry >= KLN_SYMBOL(struct jump_entry *, __start___jump_table) &&
 +	    entry < KLN_SYMBOL(struct jump_entry *, __stop___jump_table)) {
-+		return bhv_jump_label_validate_opcode(
-+			entry, bhv_jump_label_type(entry), opcode, len);
++		// We should only modify the kernel text section
++		if (!kernel_text_address(addr)) {
++			snprintf(
++				error_msg, BHV_MAX_VIOLATION_MSG_SZ,
++				"Jump label destination (0x%lx) outside of kernel text region",
++				addr);
++			return FAIL;
++		}
++
++		if (!bhv_jump_label_validate_opcode(
++			    entry, bhv_jump_label_type(entry), opcode, len)) {
++			snprintf(error_msg, BHV_MAX_VIOLATION_MSG_SZ,
++				 "Jump label opcode validation failed");
++			return FAIL;
++		}
++
++		// Search for overlapping jump labels.
++		for (iter = KLN_SYMBOL(struct jump_entry *,
++				       __start___jump_table);
++		     iter <
++		     KLN_SYMBOL(struct jump_entry *, __stop___jump_table);
++		     iter++) {
++			if (iter == entry)
++				continue;
++
++			tmp_addr = (unsigned long)jump_entry_code(iter);
++
++			if (addr <= tmp_addr && tmp_addr < addr + len) {
++				snprintf(
++					error_msg, BHV_MAX_VIOLATION_MSG_SZ,
++					"Jump label (0x%lx) overlaps with jump label (0x%lx)",
++					(unsigned long)(entry),
++					(unsigned long)(iter));
++				return FAIL;
++			}
++		}
++
++		return SUCCESS;
 +	}
 +
 +	list_for_each_entry (i, &bhv_static_key_mod_head, list) {
 +		if (entry >= i->entries_start && entry < i->entries_stop) {
-+			return bhv_jump_label_validate_opcode(
-+				entry, bhv_jump_label_type(entry), opcode, len);
++			struct module *tmp;
++
++			if (i->mod->state != MODULE_STATE_COMING &&
++			    i->mod->state != MODULE_STATE_LIVE) {
++				snprintf(
++					error_msg, BHV_MAX_VIOLATION_MSG_SZ,
++					"Invalid module state for jump label (%u)",
++					i->mod->state);
++				return FAIL;
++			}
++
++			if ((jump_entry_is_init(entry) &&
++			     i->mod->state != MODULE_STATE_COMING)) {
++				snprintf(
++					error_msg, BHV_MAX_VIOLATION_MSG_SZ,
++					"Trying to apply jump label in incorrect module state (%u)",
++					i->mod->state);
++				return FAIL;
++			}
++
++			// Module entries should only point to the text section
++			// of the module
++			// Note: We use the kernel API to check this. We could perform
++			// the check manually but using the kernel API seems more stable.
++			tmp = __module_text_address(addr);
++			if (tmp == NULL) {
++				// No module found
++				snprintf(
++					error_msg, BHV_MAX_VIOLATION_MSG_SZ,
++					"Jump label trying to write address outside of module (0x%lx)",
++					addr);
++				return FAIL;
++			}
++
++			if (tmp != i->mod) {
++				snprintf(
++					error_msg, BHV_MAX_VIOLATION_MSG_SZ,
++					"Found invalid module for jump label (0x%lx<->0x%lx)",
++					(unsigned long)tmp,
++					(unsigned long)i->mod);
++				return FAIL;
++			}
++
++			if (!bhv_jump_label_validate_opcode(
++				    entry, bhv_jump_label_type(entry), opcode,
++				    len)) {
++				snprintf(error_msg, BHV_MAX_VIOLATION_MSG_SZ,
++					 "Found invalid module for jump label");
++				return FAIL;
++			}
++
++			// Search for overlapping jump labels.
++			for (iter = i->entries_start; iter < i->entries_stop;
++			     iter++) {
++				if (iter == entry)
++					continue;
++
++				tmp_addr = (unsigned long)jump_entry_code(iter);
++
++				if (addr <= tmp_addr &&
++				    tmp_addr < addr + len) {
++					snprintf(
++						error_msg,
++						BHV_MAX_VIOLATION_MSG_SZ,
++						"Jump label (0x%lx) overlaps with other jump label (0x%lx)",
++						(unsigned long)entry,
++						(unsigned long)iter);
++					return FAIL;
++				}
++			}
++
++			return SUCCESS;
 +		}
 +	}
 +
-+	return false;
++	snprintf(error_msg, BHV_MAX_VIOLATION_MSG_SZ,
++		 "Unknown jump label (0x%lx)", (unsigned long)entry);
++	return FAIL;
 +}
 +
 +int __bhv_text bhv_vault_patch_jump_label(struct jump_entry *entry,
@@ -12378,7 +13607,7 @@ index 000000000..0b8409b1a
 +{
 +	int rv = 0;
 +	unsigned long r;
-+	bool validation_ok;
++	jump_label_validation_t validation_ok;
 +	void *dest_virt_addr = (void *)jump_entry_code(entry);
 +
 +	rv = bhv_vault_open_hyp();
@@ -12391,10 +13620,22 @@ index 000000000..0b8409b1a
 +		return -E2BIG;
 +	}
 +
-+	validation_ok = validate_jmp_labels(entry, opcode, len);
-+	if (!validation_ok) {
++	validation_ok = validate_jmp_labels(
++		entry, opcode, len, bhv_arg->bhv_patch_violation_arg.message);
++	if (validation_ok == SKIP) {
 +		bhv_vault_close_hyp();
-+		return -EACCES;
++		return 0;
++	}
++
++	if (validation_ok == FAIL) {
++		if (bhv_patch_violation_hypercall(dest_virt_addr, NULL,
++						  bhv_arg)) {
++			// Block this patch
++			bhv_vault_close_hyp();
++			return -EACCES;
++		}
++
++		// The violation should only be logged. Thus we continue.
 +	}
 +
 +	r = bhv_patch_hypercall(dest_virt_addr, opcode, (uint64_t)len, true,
@@ -12449,10 +13690,10 @@ index 000000000..0b8409b1a
 +}
 diff --git kernel/bhv/start.c kernel/bhv/start.c
 new file mode 100644
-index 000000000..bd28d4175
+index 000000000..53d2f3a45
 --- /dev/null
 +++ kernel/bhv/start.c
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,258 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -12653,6 +13894,8 @@ index 000000000..bd28d4175
 +
 +#ifndef VASKM // inside kernel tree
 +	if (bhv_integrity_is_enabled()) {
++		bhv_start_ptpg();
++
 +		rc = kmem_cache_alloc_bulk(bhv_mem_region_cache, GFP_KERNEL, 2,
 +					   (void **)&n);
 +		if (!rc) {
@@ -12700,6 +13943,14 @@ index 000000000..bd28d4175
 +	}
 +
 +	return true;
++}
++
++void bhv_late_start(void)
++{
++	int r = bhv_integrity_init_ptpg();
++	if (r) {
++		bhv_fail("ptpg init failed");
++	}
 +}
 diff --git kernel/bhv/sysfs.c kernel/bhv/sysfs.c
 new file mode 100644
@@ -12943,10 +14194,10 @@ index 000000000..8e38fa02f
 +}
 diff --git kernel/bhv/sysfs_integrity_freeze.c kernel/bhv/sysfs_integrity_freeze.c
 new file mode 100644
-index 000000000..d04942e99
+index 000000000..f8c915008
 --- /dev/null
 +++ kernel/bhv/sysfs_integrity_freeze.c
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,99 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -12963,68 +14214,6 @@ index 000000000..d04942e99
 +#include <bhv/integrity.h>
 +#include <bhv/interface/integrity.h>
 +
-+#ifndef VASKM // inside kernel tree
-+#ifndef CONFIG_KALLSYMS
-+#error CONFIG_KALLSYMS required
-+#endif
-+#include <linux/kallsyms.h>
-+#define KLN_SYMBOL(ty, sym) ((ty) kallsyms_lookup_name(#sym))
-+
-+#else // out of tree
-+#include <kln.h>
-+#endif //VASKM
-+
-+
-+static void lock_all_modules(void)
-+{
-+        static bool all_modules_locked = false;
-+	struct module *mptr;
-+
-+        if (all_modules_locked)
-+                return;
-+
-+	mutex_lock(KLN_SYMBOL(struct mutex *, module_mutex));
-+
-+	list_for_each_entry (mptr, KLN_SYMBOL(struct list_head *, modules),
-+			     list) {
-+		if (mptr != THIS_MODULE) {
-+			if (!try_module_get(mptr)) {
-+				printk(KERN_WARNING
-+                                       "%s: Cannot lock module %s\n",
-+                                       __FUNCTION__, mptr->name);
-+			}
-+		}
-+	}
-+
-+	mutex_unlock(KLN_SYMBOL(struct mutex *, module_mutex));
-+        all_modules_locked = true;
-+	return;
-+}
-+
-+bool bhv_allow_kmod_loads = true;
-+bool bhv_allow_patch = true;
-+
-+int bhv_enable_freeze_flag(uint64_t flag, bool skip_locks)
-+{
-+        if (!skip_locks) {
-+        	if (flag & BHV_FREEZE_FLAGS_DENY_CREATE ||
-+        	    flag & BHV_FREEZE_FLAGS_DENY_UPDATE ||
-+                    flag & BHV_FREEZE_FLAGS_DENY_REMOVE ||
-+                    flag & BHV_FREEZE_FLAGS_DENY_PATCH) {
-+        		bhv_allow_kmod_loads = false;
-+        		lock_all_modules();
-+        	}
-+        	if (flag & BHV_FREEZE_FLAGS_DENY_PATCH) {
-+        		bhv_allow_patch = false;
-+        	}
-+        } else {
-+		printk(KERN_WARNING "%s: Not restricting frozen operations\n",
-+		       __FUNCTION__);
-+	}
-+
-+	return bhv_integrity_freeze_events(flag);
-+}
-+
 +static ssize_t _bhv_intfr_sysfs_show(struct kobject *kobj,
 +				     struct kobj_attribute *attr, char *buf);
 +
@@ -13035,44 +14224,36 @@ index 000000000..d04942e99
 +struct bhv_intfr_sysfs_data {
 +	const struct kobj_attribute attr;
 +	const uint64_t param;
++	const bool *const flagp;
 +} static const __section(".rodata") _bhv_intfr_sysfs_data[] = {
 +	{ .attr = __ATTR(create, 0640, _bhv_intfr_sysfs_show,
 +			 _bhv_intfr_sysfs_store),
-+	  .param = BHV_FREEZE_FLAGS_DENY_CREATE },
++	  .param = BHV_FREEZE_FLAGS_DENY_CREATE,
++	  .flagp = &bhv_integrity_freeze_create_currently_frozen },
 +	{ .attr = __ATTR(update, 0640, _bhv_intfr_sysfs_show,
 +			 _bhv_intfr_sysfs_store),
-+	  .param = BHV_FREEZE_FLAGS_DENY_UPDATE },
++	  .param = BHV_FREEZE_FLAGS_DENY_UPDATE,
++	  .flagp = &bhv_integrity_freeze_update_currently_frozen },
 +	{ .attr = __ATTR(remove, 0640, _bhv_intfr_sysfs_show,
 +			 _bhv_intfr_sysfs_store),
-+	  .param = BHV_FREEZE_FLAGS_DENY_REMOVE },
++	  .param = BHV_FREEZE_FLAGS_DENY_REMOVE,
++	  .flagp = &bhv_integrity_freeze_remove_currently_frozen },
 +	{ .attr = __ATTR(patch, 0640, _bhv_intfr_sysfs_show,
 +			 _bhv_intfr_sysfs_store),
-+	  .param = BHV_FREEZE_FLAGS_DENY_PATCH },
++	  .param = BHV_FREEZE_FLAGS_DENY_PATCH,
++	  .flagp = &bhv_integrity_freeze_patch_currently_frozen },
 +};
-+
-+struct bhv_intfr_sysfs_data_var {
-+	char flag;
-+} static _bhv_intfr_sysfs_data_var[] = {
-+	{ .flag = '0' },
-+	{ .flag = '0' },
-+	{ .flag = '0' },
-+	{ .flag = '0' },
-+};
-+
-+static_assert(ARRAY_SIZE(_bhv_intfr_sysfs_data) ==
-+	      ARRAY_SIZE(_bhv_intfr_sysfs_data_var));
 +
 +#define attr_to_bsd(ptr) container_of((ptr), struct bhv_intfr_sysfs_data, attr)
-+#define attr_to_bsd_var(ptr)                                                   \
-+	_bhv_intfr_sysfs_data_var + (attr_to_bsd(ptr) - _bhv_intfr_sysfs_data)
++#define cur_flag_val(bisdp) (*((bisdp)->flagp) ? '1' : '0')
 +
 +// https://www.kernel.org/doc/html/latest/filesystems/sysfs.html#reading-writing-attribute-data
 +
 +static ssize_t _bhv_intfr_sysfs_show(struct kobject *kobj,
 +				     struct kobj_attribute *attr, char *buf)
 +{
-+	struct bhv_intfr_sysfs_data_var *data_var = attr_to_bsd_var(attr);
-+	return scnprintf(buf, PAGE_SIZE, "%c\n", data_var->flag);
++	struct bhv_intfr_sysfs_data *data = attr_to_bsd(attr);
++	return scnprintf(buf, PAGE_SIZE, "%c\n", cur_flag_val(data));
 +}
 +
 +static ssize_t _bhv_intfr_sysfs_store(struct kobject *kobj,
@@ -13083,20 +14264,17 @@ index 000000000..d04942e99
 +	     (count == 2 && buf[1] == '\n' && buf[2] == '\0')) &&
 +	    (buf[0] == '0' || buf[0] == '1' || buf[0] == '2')) {
 +		struct bhv_intfr_sysfs_data *data = attr_to_bsd(attr);
-+		struct bhv_intfr_sysfs_data_var *data_var =
-+			attr_to_bsd_var(attr);
-+		if (data_var->flag == buf[0]) {
++		if (cur_flag_val(data) == buf[0]) {
 +			printk(KERN_INFO "%s: No-op write\n", __FUNCTION__);
 +			return count;
 +
-+		} else if ((data_var->flag == '0') &&
++		} else if ((cur_flag_val(data) == '0') &&
 +			   (buf[0] == '1' || buf[0] == '2')) {
-+			int ret = bhv_enable_freeze_flag(data->param,
-+							  buf[0] == '2');
++			int ret = bhv_enable_integrity_freeze_flag(
++				data->param, buf[0] == '2');
 +			if (ret) {
 +				return ret;
 +			} else {
-+				data_var->flag = buf[0];
 +				return count;
 +			}
 +		} else {
@@ -13827,10 +15005,10 @@ index 508fe5278..b90deabd5 100644
  EXPORT_SYMBOL_GPL(kthread_unuse_mm);
 diff --git kernel/mem_namespace.c kernel/mem_namespace.c
 new file mode 100644
-index 000000000..6b93c74af
+index 000000000..2d993160a
 --- /dev/null
 +++ kernel/mem_namespace.c
-@@ -0,0 +1,212 @@
+@@ -0,0 +1,255 @@
 +#include <linux/user_namespace.h>
 +#include <linux/mem_namespace.h>
 +#include <linux/proc_ns.h>
@@ -13850,8 +15028,8 @@ index 000000000..6b93c74af
 +void put_domain(uint64_t domain)
 +{
 +	/*
-+	 * XXX: Consider checking whether the domain has been allocated before.
-+	 * We can make use of IDR (deprecated) or XArray to hold the domain IDs.
++	 * XXX: Do we need to destroy nested, higher-level domains that belong
++	 * to the acestor tree of this domain if they are still around?
 +	 */
 +
 +	if (domain == BHV_INVALID_DOMAIN)
@@ -13874,11 +15052,34 @@ index 000000000..6b93c74af
 +	.user_ns = &init_user_ns,
 +	.domain = BHV_INIT_DOMAIN,
 +	.ns.inum = PROC_MEM_INIT_INO,
++	.level = 0,
++	.parent = NULL,
 +#ifdef CONFIG_MEM_NS
 +	.ns.ops = &memns_operations,
 +#endif
 +};
 +EXPORT_SYMBOL_GPL(init_mem_ns);
++
++struct mem_namespace *memns_of_task(const struct task_struct *task)
++{
++	/*
++	 * Kernel threads, and threads that do not act on behalf of a user space
++	 * task, do not have a valid nsproxy. These threads shall switch to the
++	 * default memory namespace that we use for the init_task.
++	 * Alternatively, we can define a dedicated memory namespace, which all
++	 * kernel threads will enter if they do not execute on behalf of a user
++	 * space task.
++	 */
++	if (task == NULL || task->nsproxy == NULL)
++		return init_task.nsproxy->mem_ns;
++
++	return task->nsproxy->mem_ns;
++}
++
++bool current_in_same_mem_ns(const struct task_struct *task)
++{
++	return memns_of_task(current) == memns_of_task(task);
++}
 +
 +static struct ucounts *inc_mem_namespaces(struct user_namespace *ns)
 +{
@@ -13891,15 +15092,18 @@ index 000000000..6b93c74af
 +}
 +
 +static struct mem_namespace *create_mem_namespace(struct user_namespace *user_ns,
-+						  struct mem_namespace *old_ns)
++						  struct mem_namespace *parent_ns)
 +{
 +	struct mem_namespace *ns = NULL;
++	unsigned int level = parent_ns->level + 1;
 +	struct ucounts *ucounts;
 +	uint64_t domain = 0;
 +	int err = -EINVAL;
 +
-+	if (!in_userns(old_ns->user_ns, user_ns))
++	if (!in_userns(parent_ns->user_ns, user_ns))
 +		goto out;
++
++	/* XXX: Consider limiting the number of nested memory namespaces. */
 +
 +	domain = get_free_domain();
 +	if (domain == BHV_INVALID_DOMAIN && bhv_domain_is_active())
@@ -13919,6 +15123,8 @@ index 000000000..6b93c74af
 +		goto out_free;
 +
 +	kref_init(&ns->kref);
++	ns->level = level;
++	ns->parent = get_mem_ns(parent_ns);
 +	ns->ns.ops = &memns_operations;
 +	ns->domain = domain;
 +	ns->user_ns = get_user_ns(user_ns);
@@ -13933,8 +15139,6 @@ index 000000000..6b93c74af
 +out_domain:
 +	put_domain(domain);
 +out:
-+	bhv_pr_info("Failed to create new memory namespace");
-+
 +	return ERR_PTR(err);
 +}
 +
@@ -13974,8 +15178,7 @@ index 000000000..6b93c74af
 +
 +void free_mem_ns(struct kref *kref)
 +{
-+	struct mem_namespace *ns;
-+	ns = container_of(kref, struct mem_namespace, kref);
++	struct mem_namespace *ns = container_of(kref, struct mem_namespace, kref);
 +	destroy_mem_namespace(ns);
 +}
 +
@@ -14005,19 +15208,37 @@ index 000000000..6b93c74af
 +	put_mem_ns(to_mem_ns(ns));
 +}
 +
++bool task_in_ancestor_memns(struct task_struct *task, struct mem_namespace *ns)
++{
++	struct mem_namespace *task_ns = memns_of_task(task);
++	struct mem_namespace *ancestor = ns;
++
++	if (ancestor->level < task_ns->level)
++		return false;
++
++	while (ancestor->level > task_ns->level) {
++		ancestor = ancestor->parent;
++	}
++
++	return (ancestor == task_ns);
++}
++
 +static int memns_install(struct nsset *nsset, struct ns_common *ns)
 +{
 +	struct nsproxy *nsproxy = nsset->nsproxy;
 +	struct mem_namespace *new = to_mem_ns(ns);
 +
-+	bhv_pr_info("Install memory namespace");
-+
 +	if (!ns_capable(new->user_ns, CAP_SYS_ADMIN) ||
 +	    !ns_capable(nsset->cred->user_ns, CAP_SYS_ADMIN))
 +		return -EPERM;
 +
++	if (!task_in_ancestor_memns(current, new))
++		return -EINVAL;
++
 +	put_mem_ns(nsproxy->mem_ns);
 +	nsproxy->mem_ns = get_mem_ns(new);
++
++	/* XXX: Do we need an explicit mem_ns_for_children? */
 +
 +	return 0;
 +}
@@ -14044,7 +15265,7 @@ index 000000000..6b93c74af
 +
 +__initcall(mem_ns_init);
 diff --git kernel/module.c kernel/module.c
-index 33d1dc6d4..e1a56ebd6 100644
+index 33d1dc6d4..36eabb433 100644
 --- kernel/module.c
 +++ kernel/module.c
 @@ -60,6 +60,8 @@
@@ -14056,6 +15277,15 @@ index 33d1dc6d4..e1a56ebd6 100644
  #define CREATE_TRACE_POINTS
  #include <trace/events/module.h>
  
+@@ -89,7 +91,7 @@
+  * (delete and add uses RCU list operations). */
+ DEFINE_MUTEX(module_mutex);
+ EXPORT_SYMBOL_GPL(module_mutex);
+-static LIST_HEAD(modules);
++LIST_HEAD(modules);
+ 
+ /* Work queue for freeing init sections in success case */
+ static void do_free_init(struct work_struct *w);
 @@ -273,6 +275,14 @@ static void module_assert_mutex_or_preempt(void)
  }
  
@@ -14120,7 +15350,7 @@ index 33d1dc6d4..e1a56ebd6 100644
  	after_dashes = parse_args(mod->name, mod->args, mod->kp, mod->num_kp,
  				  -32768, 32767, mod,
 diff --git kernel/nsproxy.c kernel/nsproxy.c
-index 12dd41b39..39f8ae1a9 100644
+index 12dd41b39..3debde099 100644
 --- kernel/nsproxy.c
 +++ kernel/nsproxy.c
 @@ -16,6 +16,7 @@
@@ -14275,6 +15505,35 @@ index 12dd41b39..39f8ae1a9 100644
  out:
  	if (pid_ns)
  		put_pid_ns(pid_ns);
+@@ -546,6 +606,10 @@ SYSCALL_DEFINE2(setns, int, fd, int, flags)
+ 			err = -EINVAL;
+ 		flags = ns->ops->type;
+ 	} else if (!IS_ERR(pidfd_pid(file))) {
++		if (bhv_check_memns_enable_flags(flags)) {
++			flags |= CLONE_NEWMEM;
++		}
++
+ 		err = check_setns_flags(flags);
+ 	} else {
+ 		err = -EINVAL;
+@@ -558,6 +622,17 @@ SYSCALL_DEFINE2(setns, int, fd, int, flags)
+ 		goto out;
+ 
+ 	if (proc_ns_file(file))
++#if CONFIG_MEM_NS
++		/*
++		 * XXX: Note that we cannot piggy-back memory namespaces onto
++		 * pid namespaces during nsset/nsenter if no pidfd is given.
++		 * This is because we cannot identify the associated memory
++		 * namespace without any additional links between the
++		 * pid_namespace and the mem_namespace data structures. Consider
++		 * adding links or using pid namespaces alone for creating
++		 * memory isolation domains.
++		 */
++#endif
+ 		err = validate_ns(&nsset, ns);
+ 	else
+ 		err = validate_nsset(&nsset, file->private_data);
 diff --git kernel/printk/printk.c kernel/printk/printk.c
 index 17a310dcb..3a0903031 100644
 --- kernel/printk/printk.c
@@ -14289,19 +15548,29 @@ index 17a310dcb..3a0903031 100644
  	.read = devkmsg_read,
  	.write_iter = devkmsg_write,
 diff --git kernel/sched/core.c kernel/sched/core.c
-index 9d6dd14cf..8b34f15c3 100644
+index 9d6dd14cf..f44479441 100644
 --- kernel/sched/core.c
 +++ kernel/sched/core.c
-@@ -17,6 +17,9 @@
+@@ -17,6 +17,10 @@
  #include <linux/kcov.h>
  #include <linux/scs.h>
  
 +#include <linux/mem_namespace.h>
 +#include <bhv/domain.h>
++#include <bhv/integrity.h>
 +
  #include <asm/switch_to.h>
  #include <asm/tlb.h>
  
+@@ -3773,6 +3777,8 @@ context_switch(struct rq *rq, struct task_struct *prev,
+ 			mmgrab(prev->active_mm);
+ 		else
+ 			prev->active_mm = NULL;
++
++		bhv_pt_protect_check_pgd(next->active_mm);
+ 	} else {                                        // to user
+ 		membarrier_switch_mm(rq, prev->active_mm, next->mm);
+ 		/*
 diff --git kernel/sysctl.c kernel/sysctl.c
 index a45f0dd10..55fb470bb 100644
 --- kernel/sysctl.c
@@ -14322,6 +15591,26 @@ index a45f0dd10..55fb470bb 100644
  		.proc_handler	= proc_dostring,
  	},
  	{
+diff --git kernel/trace/Kconfig kernel/trace/Kconfig
+index 29db703f6..8b2ce9c58 100644
+--- kernel/trace/Kconfig
++++ kernel/trace/Kconfig
+@@ -126,6 +126,7 @@ if TRACING_SUPPORT
+ menuconfig FTRACE
+ 	bool "Tracers"
+ 	default y if DEBUG_KERNEL
++	depends on !BHV_LOCKDOWN
+ 	help
+ 	  Enable the kernel tracing infrastructure.
+ 
+@@ -360,6 +361,7 @@ config MMIOTRACE
+ config ENABLE_DEFAULT_TRACERS
+ 	bool "Trace process context switches and events"
+ 	depends on !GENERIC_TRACER
++	depends on !BHV_LOCKDOWN
+ 	select TRACING
+ 	help
+ 	  This tracer hooks to various trace points in the kernel,
 diff --git kernel/ucount.c kernel/ucount.c
 index 11b1596e2..92a8ae8cd 100644
 --- kernel/ucount.c
@@ -14334,6 +15623,30 @@ index 11b1596e2..92a8ae8cd 100644
  	{ }
  };
  #endif /* CONFIG_SYSCTL */
+diff --git lib/Kconfig.debug lib/Kconfig.debug
+index 19c28a34c..962966ed8 100644
+--- lib/Kconfig.debug
++++ lib/Kconfig.debug
+@@ -527,6 +527,7 @@ endmenu
+ 
+ config DEBUG_KERNEL
+ 	bool "Kernel debugging"
++	depends on !BHV_LOCKDOWN
+ 	help
+ 	  Say Y here if you are developing drivers or trying to debug and
+ 	  identify kernel problems.
+diff --git lib/Kconfig.kgdb lib/Kconfig.kgdb
+index 05dae05b6..828c9bc65 100644
+--- lib/Kconfig.kgdb
++++ lib/Kconfig.kgdb
+@@ -28,6 +28,7 @@ config KGDB_HONOUR_BLOCKLIST
+ 	bool "KGDB: use kprobe blocklist to prohibit unsafe breakpoints"
+ 	depends on HAVE_KPROBES
+ 	depends on MODULES
++	depends on !BHV_LOCKDOWN
+ 	select KPROBES
+ 	default y
+ 	help
 diff --git mm/filemap.c mm/filemap.c
 index 3a983bc1a..4d9c8f3e3 100644
 --- mm/filemap.c
@@ -14356,6 +15669,99 @@ index 3a983bc1a..4d9c8f3e3 100644
  	WRITE_ONCE(file->f_ra.mmap_miss, mmap_miss);
  }
  EXPORT_SYMBOL(filemap_map_pages);
+diff --git mm/gup.c mm/gup.c
+index 11307a8b2..edf6755e9 100644
+--- mm/gup.c
++++ mm/gup.c
+@@ -21,6 +21,8 @@
+ #include <asm/mmu_context.h>
+ #include <asm/tlbflush.h>
+ 
++#include <linux/mem_namespace.h>
++
+ #include "internal.h"
+ 
+ struct follow_page_context {
+@@ -923,6 +925,11 @@ static int check_vma_flags(struct vm_area_struct *vma, unsigned long gup_flags)
+ 	int write = (gup_flags & FOLL_WRITE);
+ 	int foreign = (gup_flags & FOLL_REMOTE);
+ 
++#ifdef CONFIG_MEM_NS
++	struct mm_struct *mm = vma->vm_mm;
++	struct task_struct *t = mm->owner;
++#endif
++
+ 	if (vm_flags & (VM_IO | VM_PFNMAP))
+ 		return -EFAULT;
+ 
+@@ -930,6 +937,17 @@ static int check_vma_flags(struct vm_area_struct *vma, unsigned long gup_flags)
+ 		return -EFAULT;
+ 
+ 	if (write) {
++#ifdef CONFIG_MEM_NS
++		/*
++		 * Grant write access to remote address spaces only if both
++		 * processes are executing inside of the same mem_namespace.
++		 */
++		if (!current_in_same_mem_ns(t)) {
++			if(bhv_domain_report(current, mm, vma, gup_flags))
++				return -EPERM;
++		}
++#endif
++
+ 		if (!(vm_flags & VM_WRITE)) {
+ 			if (!(gup_flags & FOLL_FORCE))
+ 				return -EFAULT;
+@@ -944,17 +962,42 @@ static int check_vma_flags(struct vm_area_struct *vma, unsigned long gup_flags)
+ 			 */
+ 			if (!is_cow_mapping(vm_flags))
+ 				return -EFAULT;
++
++#ifdef CONFIG_MEM_NS
++			if (!bhv_forced_mem_access_permitted(vma, write, foreign))
++				return -EPERM;
++#endif
+ 		}
+-	} else if (!(vm_flags & VM_READ)) {
+-		if (!(gup_flags & FOLL_FORCE))
+-			return -EFAULT;
++	} else {
++#ifdef CONFIG_MEM_NS
+ 		/*
+-		 * Is there actually any vma we can reach here which does not
+-		 * have VM_MAYREAD set?
++		 * Grant read access to remote address spaces only if both
++		 * processes are part of the same ancestor tree branch the
++		 * target mem_namespace.
+ 		 */
+-		if (!(vm_flags & VM_MAYREAD))
+-			return -EFAULT;
++		if (!task_in_ancestor_memns(current, memns_of_task(t))) {
++			if(bhv_domain_report(current, mm, vma, gup_flags))
++				return -EPERM;
++		}
++#endif
++
++		if (!(vm_flags & VM_READ)) {
++			if (!(gup_flags & FOLL_FORCE))
++				return -EFAULT;
++			/*
++			 * Is there actually any vma we can reach here which does not
++			 * have VM_MAYREAD set?
++			 */
++			if (!(vm_flags & VM_MAYREAD))
++				return -EFAULT;
++
++#ifdef CONFIG_MEM_NS
++			if (!bhv_forced_mem_access_permitted(vma, write, foreign))
++				return -EPERM;
++#endif
++		}
+ 	}
++
+ 	/*
+ 	 * gups are always data accesses, not instruction
+ 	 * fetches, so execute=false here
 diff --git mm/khugepaged.c mm/khugepaged.c
 index 28e18777e..02eb8fa95 100644
 --- mm/khugepaged.c
@@ -14642,11 +16048,45 @@ index 51ccd80e7..329e726d7 100644
  		continue;
  
  activate_locked_split:
+diff --git net/Kconfig net/Kconfig
+index a22c3fb88..e888dbdc2 100644
+--- net/Kconfig
++++ net/Kconfig
+@@ -292,6 +292,8 @@ config BPF_JIT
+ 	bool "enable BPF Just In Time compiler"
+ 	depends on HAVE_CBPF_JIT || HAVE_EBPF_JIT
+ 	depends on MODULES
++	depends on !BHV_FREEZE_MEMORY_AFTER_BOOT
++	depends on !BHV_LOCKDOWN
+ 	help
+ 	  Berkeley Packet Filter filtering capabilities are normally handled
+ 	  by an interpreter. This option allows kernel to generate a native
+diff --git net/socket.c net/socket.c
+index 84223419d..40efc377e 100644
+--- net/socket.c
++++ net/socket.c
+@@ -146,7 +146,7 @@ static void sock_show_fdinfo(struct seq_file *m, struct file *f)
+  *	in the operation structures but are done directly via the socketcall() multiplexor.
+  */
+ 
+-static const struct file_operations socket_file_ops = {
++const struct file_operations socket_file_ops = {
+ 	.owner =	THIS_MODULE,
+ 	.llseek =	no_llseek,
+ 	.read_iter =	sock_read_iter,
 diff --git security/Kconfig security/Kconfig
-index 9893c316d..0c0abd125 100644
+index 9893c316d..fedc89798 100644
 --- security/Kconfig
 +++ security/Kconfig
-@@ -222,11 +222,20 @@ config STATIC_USERMODEHELPER_PATH
+@@ -189,6 +189,7 @@ config FORTIFY_SOURCE
+ 
+ config STATIC_USERMODEHELPER
+ 	bool "Force all usermode helper calls through a single binary"
++	depends on !BHV_FREEZE_MEMORY_AFTER_BOOT
+ 	help
+ 	  By default, the kernel can call many different userspace
+ 	  binary programs through the "usermode helper" kernel
+@@ -222,6 +223,15 @@ config STATIC_USERMODEHELPER_PATH
  	  If you wish for all usermode helper programs to be disabled,
  	  specify an empty string here (i.e. "").
  
@@ -14658,16 +16098,11 @@ index 9893c316d..0c0abd125 100644
 +	help
 +	  Enable memory namespaces.
 +
++source "kernel/bhv/Kconfig"
  source "security/selinux/Kconfig"
  source "security/smack/Kconfig"
  source "security/tomoyo/Kconfig"
- source "security/apparmor/Kconfig"
- source "security/loadpin/Kconfig"
-+source "security/bhv/Kconfig"
- source "security/yama/Kconfig"
- source "security/safesetid/Kconfig"
- source "security/lockdown/Kconfig"
-@@ -269,11 +278,11 @@ endchoice
+@@ -269,11 +279,11 @@ endchoice
  
  config LSM
  	string "Ordered list of enabled LSMs"
@@ -14685,14 +16120,14 @@ index 9893c316d..0c0abd125 100644
  	  A comma-separated list of LSMs, in initialization order.
  	  Any LSMs left off this list will be ignored. This can be
 diff --git security/Makefile security/Makefile
-index 3baf435de..9958117a6 100644
+index 3baf435de..aa60209b2 100644
 --- security/Makefile
 +++ security/Makefile
 @@ -10,6 +10,7 @@ subdir-$(CONFIG_SECURITY_TOMOYO)        += tomoyo
  subdir-$(CONFIG_SECURITY_APPARMOR)	+= apparmor
  subdir-$(CONFIG_SECURITY_YAMA)		+= yama
  subdir-$(CONFIG_SECURITY_LOADPIN)	+= loadpin
-+subdir-$(CONFIG_SECURITY_BHV)		+= bhv
++subdir-$(CONFIG_BHV_VAS)		+= bhv
  subdir-$(CONFIG_SECURITY_SAFESETID)    += safesetid
  subdir-$(CONFIG_SECURITY_LOCKDOWN_LSM)	+= lockdown
  subdir-$(CONFIG_BPF_LSM)		+= bpf
@@ -14700,39 +16135,24 @@ index 3baf435de..9958117a6 100644
  obj-$(CONFIG_SECURITY_APPARMOR)		+= apparmor/
  obj-$(CONFIG_SECURITY_YAMA)		+= yama/
  obj-$(CONFIG_SECURITY_LOADPIN)		+= loadpin/
-+obj-$(CONFIG_SECURITY_BHV)		+= bhv/
++obj-$(CONFIG_BHV_VAS)			+= bhv/
  obj-$(CONFIG_SECURITY_SAFESETID)       += safesetid/
  obj-$(CONFIG_SECURITY_LOCKDOWN_LSM)	+= lockdown/
  obj-$(CONFIG_CGROUPS)			+= device_cgroup.o
-diff --git security/bhv/Kconfig security/bhv/Kconfig
-new file mode 100644
-index 000000000..309c33608
---- /dev/null
-+++ security/bhv/Kconfig
-@@ -0,0 +1,9 @@
-+# SPDX-License-Identifier: GPL-2.0-only
-+config SECURITY_BHV
-+	bool "Enable the BHV LSM."
-+	depends on SECURITY
-+	depends on BHV_VAS
-+	default y
-+	help
-+	  Enables the BHV LSM. The BHV LSM provides hooking capabilities for
-+	  additional protections such as the process and the driver ACL.
 diff --git security/bhv/Makefile security/bhv/Makefile
 new file mode 100644
-index 000000000..f921bdf38
+index 000000000..5d8dd6423
 --- /dev/null
 +++ security/bhv/Makefile
 @@ -0,0 +1,2 @@
 +# SPDX-License-Identifier: GPL-2.0-only
-+obj-$(CONFIG_SECURITY_BHV) += bhv.o
++obj-$(CONFIG_BHV_VAS) += bhv.o
 diff --git security/bhv/bhv.c security/bhv/bhv.c
 new file mode 100644
-index 000000000..2b80bd991
+index 000000000..b2c79e325
 --- /dev/null
 +++ security/bhv/bhv.c
-@@ -0,0 +1,537 @@
+@@ -0,0 +1,643 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -14757,7 +16177,7 @@ index 000000000..2b80bd991
 +#include <bhv/bhv.h>
 +#include <bhv/file_protection.h>
 +#include <bhv/fileops_protection.h>
-+#include <bhv/sysfs_integrity_freeze.h>
++#include <bhv/integrity.h>
 +#include <bhv/guestlog.h>
 +#include <bhv/sysfs_fops.h>
 +
@@ -14817,7 +16237,6 @@ index 000000000..2b80bd991
 +	pr_debug("[bhv] LOAD DATA HOOK: %s", origin);
 +
 +	if (id == LOADING_MODULE) {
-+
 +		if (!bhv_allow_kmod_loads)
 +			return -EPERM;
 +
@@ -14951,9 +16370,10 @@ index 000000000..2b80bd991
 +	if (!bhv_allow_update_fileops_map)
 +		return false;
 +
-+	if (is_module_ro_data((unsigned long) fops_ptr)) {
++	if (is_module_ro_data((unsigned long)fops_ptr)) {
 +		fileops_map[bhv_fops][is_dir == true ? 1 : 0] = fops_ptr;
-+		pr_info("%s: Added fops %d %d\n", __FUNCTION__, bhv_fops, is_dir);
++		pr_info("%s: Added fops %d %d\n", __FUNCTION__, bhv_fops,
++			is_dir);
 +		return true;
 +	}
 +	return false;
@@ -14966,15 +16386,14 @@ index 000000000..2b80bd991
 +	const char *pathname = NULL;
 +	char *pathname_buf = NULL;
 +	bool block = false;
++	uint64_t dtype = 0;
 +
-+	if (bhv_fops == BHV_VAS_FILEOPS_PROTECTION_UNSUPPORTED) {
-+		// file system or device not supported
-+		return false;
-+	}
-+
-+	if (file->f_op == fileops_map[bhv_fops][is_dir == true ? 1 : 0]) {
-+		// fops matches
-+		return false;
++	if (bhv_fops != BHV_VAS_FILEOPS_PROTECTION_UNSUPPORTED) {
++		if (file->f_op ==
++		    fileops_map[bhv_fops][is_dir == true ? 1 : 0]) {
++			// fops matches
++			return false;
++		}
 +	}
 +
 +	switch (bhv_fops) {
@@ -14987,6 +16406,61 @@ index 000000000..2b80bd991
 +				return false;
 +		break;
 +#endif // VASKM
++	case BHV_VAS_FILEOPS_PROTECTION_UNSUPPORTED: {
++		if (bhv_strict_fileops_enforced()) {
++			/*
++			 * strict mode configured or forced by kernel boot option
++			 * continue to report and optionally block
++			 */
++			break;
++		}
++
++		/*
++		 * fallback in case of unknown fops:
++		 * check if pointer points to ro section
++		 */
++		if (bhv_fileops_is_ro((u64)file->f_op)) {
++			if (!bhv_guestlog_log_unknown_fileops()) {
++				return false;
++			}
++
++			// set the type for logging
++			if (d_is_reg(file->f_path.dentry)) {
++				dtype = 1;
++			} else if (d_can_lookup(file->f_path.dentry)) {
++				dtype = 2;
++			} else if (d_is_special(file->f_path.dentry)) {
++				// save i_rdev which contains major and minor
++				dtype = ((u64)(file->f_inode->i_rdev) << 0x10) |
++					(MINORBITS << 8) | 3;
++			}
++
++			// log info about unsupported
++			pathname_buf = kzalloc(BHV_VAS_FILEOPS_PATH_MAX_SZ,
++					       GFP_KERNEL);
++			pathname = get_pathname(file, pathname_buf,
++						BHV_VAS_FILEOPS_PATH_MAX_SZ);
++
++			bhv_guestlog_log_fops_unknown(
++				file->f_inode->i_sb->s_magic, pathname, dtype,
++				file->f_op);
++
++			pathname = NULL;
++			kfree(pathname_buf);
++			// OK
++			return false;
++		}
++
++		break;
++	}
++	// additional check for empty dir ops
++	case BHV_VAS_FILEOPS_PROTECTION_SYSFS:
++		if (file->f_op == KLN_SYMBOL_P(const struct file_operations *,
++					       empty_dir_operations)) {
++			// we're all set
++			return false;
++		}
++		fallthrough;
 +	// additional check for dummy fops
 +	case BHV_VAS_FILEOPS_PROTECTION_TTY:
 +		if (file->f_op == KLN_SYMBOL_P(const struct file_operations *,
@@ -15051,7 +16525,13 @@ index 000000000..2b80bd991
 +		bhv_fops = bhv_fileops_type(file->f_inode->i_sb->s_magic);
 +	} else if (d_is_special(file->f_path.dentry)) {
 +		// DCACHE_SPECIAL_TYPE
-+		if (S_ISCHR(file->f_inode->i_mode)) {
++		if (S_ISSOCK(file->f_inode->i_mode)) {
++			// file->f_inode->i_sb->s_magic == SOCKFS_MAGIC
++			bhv_fops = BHV_VAS_FILEOPS_PROTECTION_SOCKET;
++		} else if (S_ISFIFO(file->f_inode->i_mode)) {
++			// file->f_inode->i_sb->s_magic == PIPEFS_MAGIC
++			bhv_fops = BHV_VAS_FILEOPS_PROTECTION_PIPE;
++		} else if (S_ISCHR(file->f_inode->i_mode)) {
 +			// character device
 +			if (dev_major == 1) {
 +				// mem
@@ -15114,6 +16594,12 @@ index 000000000..2b80bd991
 +				default:
 +					break;
 +				}
++			} else if (dev_major == 4 && dev_minor == 64) {
++				// /dev/ttyS0
++				bhv_fops = BHV_VAS_FILEOPS_PROTECTION_TTY;
++			} else if (dev_major == 229 && dev_minor == 0) {
++				// /dev/hvc0
++				bhv_fops = BHV_VAS_FILEOPS_PROTECTION_TTY;
 +			}
 +		}
 +	}
@@ -15136,10 +16622,7 @@ index 000000000..2b80bd991
 +#endif
 +
 +	// perform fops check
-+	if (bhv_fops != BHV_VAS_FILEOPS_PROTECTION_UNSUPPORTED)
-+		return bhv_perform_check_fileops(file, bhv_fops, is_dir);
-+
-+	return false;
++	return bhv_perform_check_fileops(file, bhv_fops, is_dir);
 +}
 +
 +static_vk int bhv_check_files_dirty_pipe(const void *address_space,
@@ -15151,8 +16634,8 @@ index 000000000..2b80bd991
 +
 +	struct inode *ipipe =
 +		address_space != NULL ?
-+			((struct address_space *)address_space)->host :
-+			NULL;
++			      ((struct address_space *)address_space)->host :
++			      NULL;
 +	struct inode *ifile = d_real_inode(file->f_path.dentry);
 +
 +	if (ipipe == NULL || ifile == NULL || !virt_addr_valid(ipipe))
@@ -15184,7 +16667,7 @@ index 000000000..2b80bd991
 +		}
 +
 +		// Ask the HOST whether we should block this attempt.
-+		rv = bhv_block_read_only_file_write(filename);
++		rv = bhv_block_read_only_file_write(filename, 0);
 +
 +		if (filename_buf != NULL) {
 +			kfree(filename_buf);
@@ -15194,6 +16677,46 @@ index 000000000..2b80bd991
 +	}
 +
 +	return 0;
++}
++
++/*
++ * Dirty cred detection
++ * When a write happens this checks whether the struct file object is opened for
++ * writing. If this is not the case notify and optionally stop the write
++ * attempt immediately.
++ */
++void bhv_check_file_dirty_cred(struct file *file, int mask)
++{
++	const char *pathname = NULL;
++	char *pathname_buf = NULL;
++
++	if (!bhv_dirtycred_file_protection_is_enabled())
++		return;
++
++	// No need to continue if no write attempt is ongoing.
++	if (!(mask & MAY_WRITE))
++		return;
++
++	if (!(file->f_mode & FMODE_WRITE) ||
++	    !(file->f_mode & FMODE_CAN_WRITE)) {
++		pathname_buf = kzalloc(BHV_VAS_FILE_PROTECTION_MAX_PATH_SZ,
++				       GFP_KERNEL);
++		pathname = get_pathname(file, pathname_buf,
++					BHV_VAS_FILE_PROTECTION_MAX_PATH_SZ);
++		pr_err("Write to read-only file \"%s\" detected!", pathname);
++		// At this point a struct file object was already placed illegitimately
++		// at the location of another. When we're be called from a LSM file
++		// permission hook, we could still bail out gracefully. However, as
++		// illegitimately placing struct file objects often happens after
++		// permission and LSM hooks, we need to check deep inside write attempts
++		// (e.g. in mm/filemap.c:generic_perform_write()). There, we do not have
++		// much choice as the attempts might have already corrupted the
++		// read-only file. Hence, on a block, we panic after having informed the
++		// HOST.
++		if (bhv_block_read_only_file_write(pathname, 1)) {
++			panic("possible dirtycred compromise detected");
++		}
++	}
 +}
 +
 +static_vk int bhv_file_open(struct file *file)
@@ -15211,6 +16734,9 @@ index 000000000..2b80bd991
 +
 +	if (bhv_fileops_file_protection_is_enabled() && bhv_check_fileops(file))
 +		return -EFAULT;
++
++	/* check for dirty cred inside LSM hook (e.g. for aio_write()) */
++	bhv_check_file_dirty_cred(file, mask);
 +
 +	if (!bhv_read_only_file_protection_is_enabled())
 +		return 0;
