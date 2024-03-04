@@ -22,7 +22,7 @@ index d6465823b..f1ea15a79 100644
  obj-$(CONFIG_CRYPTO)	+= crypto/
 diff --git arch/arm64/bhv/Makefile arch/arm64/bhv/Makefile
 new file mode 100644
-index 000000000..e66e83fdb
+index 000000000..bd471170a
 --- /dev/null
 +++ arch/arm64/bhv/Makefile
 @@ -0,0 +1,14 @@
@@ -33,19 +33,19 @@ index 000000000..e66e83fdb
 +#          Jonas Pfoh <jonas@bedrocksystems.com>
 +#          Sebastian Vogl <sebastian@bedrocksystems.com>
 +
-+obj-$(CONFIG_BHV_VAS)		:= start.o
-+obj-$(CONFIG_BHV_VAS)		+= init.o
++obj-$(CONFIG_BHV_VAS)		:= init/start.o
++obj-$(CONFIG_BHV_VAS)		+= init/init.o
 +obj-$(CONFIG_BHV_VAS)		+= integrity.o
 +ifeq ($(CONFIG_JUMP_LABEL),y)
 +obj-$(CONFIG_BHV_VAS)		+= patch_jump_label.o
 +endif
 +obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
-diff --git arch/arm64/bhv/init.c arch/arm64/bhv/init.c
+diff --git arch/arm64/bhv/init/init.c arch/arm64/bhv/init/init.c
 new file mode 100644
-index 000000000..70a504119
+index 000000000..246c2cf0c
 --- /dev/null
-+++ arch/arm64/bhv/init.c
-@@ -0,0 +1,14 @@
++++ arch/arm64/bhv/init/init.c
+@@ -0,0 +1,18 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -60,12 +60,35 @@ index 000000000..70a504119
 +			      unsigned int *region_counter)
 +{
 +}
++
++void __init bhv_init_arch(void)
++{
++}
+diff --git arch/arm64/bhv/init/start.c arch/arm64/bhv/init/start.c
+new file mode 100644
+index 000000000..487cd26c8
+--- /dev/null
++++ arch/arm64/bhv/init/start.c
+@@ -0,0 +1,13 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2022 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ */
++
++#include <bhv/integrity.h>
++
++int __init_km bhv_start_arch(void)
++{
++	return bhv_start_integrity_arch();
++}
 diff --git arch/arm64/bhv/integrity.c arch/arm64/bhv/integrity.c
 new file mode 100644
-index 000000000..a2852230a
+index 000000000..ab763706b
 --- /dev/null
 +++ arch/arm64/bhv/integrity.c
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,112 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -89,6 +112,9 @@ index 000000000..a2852230a
 +#include <kln.h>
 +#endif
 +
++/************************************************************
++ * start
++ ************************************************************/
 +int __init_km bhv_start_integrity_arch(void)
 +{
 +#define NUM_BHV_MEM_REGION_NODES 3
@@ -145,20 +171,30 @@ index 000000000..a2852230a
 +
 +	return rv;
 +}
++/************************************************************/
 +
-+void bhv_get_pt_protect_data(bhv_integrity_init_ptpg_arg_t *init_ptpg_arg)
++/************************************************************
++ * start
++ ************************************************************/
++void __init_km bhv_start_get_pt_protect_pgd_data(uint64_t *pgd_offset,
++						 uint64_t *pgd_value)
++{
++	*pgd_offset = 0;
++	*pgd_value = 0;
++}
++/************************************************************/
++
++/************************************************************
++ * late_start
++ ************************************************************/
++void bhv_late_start_get_pt_protect_data(
++	bhv_integrity_init_ptpg_arg_t *init_ptpg_arg)
 +{
 +	init_ptpg_arg->init_pgd = 0;
 +	init_ptpg_arg->pt_levels = 0;
 +	init_ptpg_arg->num_ranges = 0;
 +}
-+
-+void __init_km bhv_get_pt_protect_pgd_data(uint64_t *pgd_offset,
-+					   uint64_t *pgd_value)
-+{
-+	*pgd_offset = 0;
-+	*pgd_value = 0;
-+}
++/************************************************************/
 +
 +bool bhv_pt_protect_check_pgd_arch(struct mm_struct *mm, uint64_t pgd_offset,
 +				   uint64_t pgd_value)
@@ -715,30 +751,6 @@ index 000000000..610215168
 +
 +	return true;
 +}
-diff --git arch/arm64/bhv/start.c arch/arm64/bhv/start.c
-new file mode 100644
-index 000000000..1b140ffe2
---- /dev/null
-+++ arch/arm64/bhv/start.c
-@@ -0,0 +1,18 @@
-+// SPDX-License-Identifier: GPL-2.0-only
-+/*
-+ * Copyright (C) 2022 - BedRock Systems Inc
-+ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
-+ *          Sergej Proskurin <sergej@bedrocksystems.com>
-+ */
-+
-+#include <asm/io.h>
-+#include <asm/syscall.h>
-+
-+#include <bhv/interface/common.h>
-+#include <bhv/integrity.h>
-+#include <bhv/bhv.h>
-+
-+int __init_km bhv_start_arch(void)
-+{
-+	return bhv_start_integrity_arch();
-+}
 diff --git arch/arm64/include/asm/alternative.h arch/arm64/include/asm/alternative.h
 index 3cb3c4ab3..632546cb6 100644
 --- arch/arm64/include/asm/alternative.h
@@ -1080,7 +1092,7 @@ index 9a8a0ae1e..c95fe7342 100644
  }
  
 diff --git arch/arm64/kernel/proton-pack.c arch/arm64/kernel/proton-pack.c
-index faa8a6bf2..aac60b221 100644
+index 9c0e9d9ee..8c878e279 100644
 --- arch/arm64/kernel/proton-pack.c
 +++ arch/arm64/kernel/proton-pack.c
 @@ -31,6 +31,13 @@
@@ -1097,7 +1109,7 @@ index faa8a6bf2..aac60b221 100644
  /*
   * We try to ensure that the mitigation state can never change as the result of
   * onlining a late CPU.
-@@ -593,9 +600,16 @@ static enum mitigation_state spectre_v4_enable_hw_mitigation(void)
+@@ -581,9 +588,16 @@ static enum mitigation_state spectre_v4_enable_hw_mitigation(void)
   * Patch a branch over the Spectre-v4 mitigation code with a NOP so that
   * we fallthrough and check whether firmware needs to be called on this CPU.
   */
@@ -1114,7 +1126,7 @@ index faa8a6bf2..aac60b221 100644
  {
  	BUG_ON(nr_inst != 1); /* Branch -> NOP */
  
-@@ -605,17 +619,36 @@ void __init spectre_v4_patch_fw_mitigation_enable(struct alt_instr *alt,
+@@ -593,17 +607,36 @@ void __init spectre_v4_patch_fw_mitigation_enable(struct alt_instr *alt,
  	if (cpus_have_final_cap(ARM64_SSBS))
  		return;
  
@@ -1154,7 +1166,7 @@ index faa8a6bf2..aac60b221 100644
  {
  	u32 insn;
  
-@@ -632,7 +665,17 @@ void __init smccc_patch_fw_mitigation_conduit(struct alt_instr *alt,
+@@ -620,7 +653,17 @@ void __init smccc_patch_fw_mitigation_conduit(struct alt_instr *alt,
  		return;
  	}
  
@@ -1172,7 +1184,7 @@ index faa8a6bf2..aac60b221 100644
  }
  
  static enum mitigation_state spectre_v4_enable_fw_mitigation(void)
-@@ -1109,8 +1152,14 @@ void spectre_bhb_enable_mitigation(const struct arm64_cpu_capabilities *entry)
+@@ -1097,8 +1140,14 @@ void spectre_bhb_enable_mitigation(const struct arm64_cpu_capabilities *entry)
  }
  
  /* Patched to correct the immediate */
@@ -1187,7 +1199,7 @@ index faa8a6bf2..aac60b221 100644
  {
  	u8 rd;
  	u32 insn;
-@@ -1126,7 +1175,17 @@ void noinstr spectre_bhb_patch_loop_iter(struct alt_instr *alt,
+@@ -1114,7 +1163,17 @@ void noinstr spectre_bhb_patch_loop_iter(struct alt_instr *alt,
  	insn = aarch64_insn_gen_movewide(rd, loop_count, 0,
  					 AARCH64_INSN_VARIANT_64BIT,
  					 AARCH64_INSN_MOVEWIDE_ZERO);
@@ -1206,14 +1218,14 @@ index faa8a6bf2..aac60b221 100644
  
  #ifdef CONFIG_BPF_SYSCALL
 diff --git arch/arm64/kernel/setup.c arch/arm64/kernel/setup.c
-index eb4b24652..849c9741f 100644
+index eb4b24652..6d5815027 100644
 --- arch/arm64/kernel/setup.c
 +++ arch/arm64/kernel/setup.c
 @@ -51,6 +51,8 @@
  #include <asm/xen/hypervisor.h>
  #include <asm/mmu_context.h>
  
-+#include <bhv/start.h>
++#include <bhv/init/init.h>
 +
  static int num_standard_resources;
  static struct resource *standard_resources;
@@ -1503,20 +1515,19 @@ index d8baedd16..d0c572d56 100644
  		msg = "NULL pointer dereference";
  	} else {
 diff --git arch/arm64/mm/init.c arch/arm64/mm/init.c
-index 80cc79760..73bf1b36d 100644
+index 80cc79760..8282752bb 100644
 --- arch/arm64/mm/init.c
 +++ arch/arm64/mm/init.c
-@@ -43,6 +43,9 @@
+@@ -43,6 +43,8 @@
  #include <asm/tlb.h>
  #include <asm/alternative.h>
  
-+#include <bhv/bhv.h>
-+#include <bhv/start.h>
++#include <bhv/init/start.h>
 +
  /*
   * We need to be able to catch inadvertent references to memstart_addr
   * that occur (potentially in generic code) before arm64_memblock_init()
-@@ -592,6 +595,7 @@ void __init mem_init(void)
+@@ -592,6 +594,7 @@ void __init mem_init(void)
  
  void free_initmem(void)
  {
@@ -1540,7 +1551,7 @@ index 30dec0197..3235bbc86 100644
  obj-y += mm/
 diff --git arch/x86/bhv/Makefile arch/x86/bhv/Makefile
 new file mode 100644
-index 000000000..f7f95bc2a
+index 000000000..f47802ddb
 --- /dev/null
 +++ arch/x86/bhv/Makefile
 @@ -0,0 +1,15 @@
@@ -1551,34 +1562,37 @@ index 000000000..f7f95bc2a
 +#          Jonas Pfoh <jonas@bedrocksystems.com>
 +#          Sebastian Vogl <sebastian@bedrocksystems.com>
 +
-+obj-$(CONFIG_BHV_VAS)		:= start.o
-+obj-$(CONFIG_BHV_VAS)		+= init.o
++obj-$(CONFIG_BHV_VAS)		:= init/init.o
++obj-$(CONFIG_BHV_VAS)		+= init/start.o
 +obj-$(CONFIG_BHV_VAS)		+= integrity.o
 +ifeq ($(CONFIG_JUMP_LABEL),y)
 +obj-$(CONFIG_BHV_VAS)		+= patch_jump_label.o
 +endif
 +obj-$(CONFIG_BHV_VAS)		+= patch_alternative.o
 +obj-$(CONFIG_BHV_VAS)		+= patch_static_call.o
-diff --git arch/x86/bhv/init.c arch/x86/bhv/init.c
+diff --git arch/x86/bhv/init/init.c arch/x86/bhv/init/init.c
 new file mode 100644
-index 000000000..00ca5a1b0
+index 000000000..efcacb8da
 --- /dev/null
-+++ arch/x86/bhv/init.c
-@@ -0,0 +1,111 @@
++++ arch/x86/bhv/init/init.c
+@@ -0,0 +1,146 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022 - BedRock Systems Inc
++ * Copyright (C) 2024 - BedRock Systems Inc
 + * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
 + *          Tommaso Frassetto <tommaso.frassetto@bedrocksystems.com>
 + */
 +
-+#include <bhv/interface/common.h>
-+#include <bhv/interface/integrity.h>
++#include <linux/types.h> // This is here so that hypervisor.h knows bool
++#include <asm/hypervisor.h>
++#include <asm/processor.h>
++#include <asm/x86_init.h>
 +
-+#ifndef VASKM // inside kernel tree
++#include <asm/bhv/integrity.h>
++#include <bhv/init/init.h>
 +#include <bhv/integrity.h>
 +
-+#include <bhv/init.h>
++#ifndef VASKM // inside kernel tree
 +
 +#include <vdso/datapage.h>
 +#include <asm/io.h>
@@ -1591,7 +1605,8 @@ index 000000000..00ca5a1b0
 +			   unsigned int *region_counter)
 +{
 +#ifdef CONFIG_X86_64
-+	BUG_ON((*region_counter) == 0 || (*region_counter) >= BHV_INIT_MAX_REGIONS);
++	BUG_ON((*region_counter) == 0 ||
++	       (*region_counter) >= BHV_INIT_MAX_REGIONS);
 +
 +	bhv_mem_region_create_ctor(&init_phys_mem_regions[*region_counter],
 +				   &init_phys_mem_regions[*region_counter - 1],
@@ -1610,7 +1625,8 @@ index 000000000..00ca5a1b0
 +			    unsigned int *region_counter)
 +{
 +#ifdef CONFIG_X86_X32_ABI
-+	BUG_ON((*region_counter) == 0 || (*region_counter) >= BHV_INIT_MAX_REGIONS);
++	BUG_ON((*region_counter) == 0 ||
++	       (*region_counter) >= BHV_INIT_MAX_REGIONS);
 +
 +	bhv_mem_region_create_ctor(&init_phys_mem_regions[*region_counter],
 +				   &init_phys_mem_regions[*region_counter - 1],
@@ -1629,7 +1645,8 @@ index 000000000..00ca5a1b0
 +			   unsigned int *region_counter)
 +{
 +#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
-+	BUG_ON((*region_counter) == 0 || (*region_counter) >= BHV_INIT_MAX_REGIONS);
++	BUG_ON((*region_counter) == 0 ||
++	       (*region_counter) >= BHV_INIT_MAX_REGIONS);
 +
 +	bhv_mem_region_create_ctor(&init_phys_mem_regions[*region_counter],
 +				   &init_phys_mem_regions[*region_counter - 1],
@@ -1667,7 +1684,29 @@ index 000000000..00ca5a1b0
 +	bhv_init_add_vvar(init_phys_mem_regions, region_counter);
 +}
 +
++static uint32_t __init bhv_detect(void)
++{
++	if (boot_cpu_data.cpuid_level < 0)
++		return 0; /* So we don't blow up on old processors */
++
++	if (boot_cpu_has(X86_FEATURE_HYPERVISOR))
++		return hypervisor_cpuid_base("BHV.VMM.VAS.", 0);
++
++	return 0;
++}
++
++const __initconst struct hypervisor_x86 x86_hyper_bhv = {
++	.name = "BHV BRASS",
++	.detect = bhv_detect,
++	.type = X86_HYPER_BHV,
++	.init.guest_late_init = x86_init_noop,
++	.init.x2apic_available = bool_x86_init_noop,
++	.init.init_platform = bhv_init_platform
++};
++
 +#else // out of tree
++
++#include <common.h>
 +
 +void __init bhv_init_hyp_arch(bhv_mem_region_t *init_phys_mem_regions,
 +			      unsigned int *region_counter)
@@ -1676,12 +1715,37 @@ index 000000000..00ca5a1b0
 +}
 +
 +#endif // VASKM
++
++void __init bhv_init_arch(void)
++{
++#ifndef VASKM // inside kernel tree
++	setup_force_cpu_cap(X86_FEATURE_TSC_RELIABLE);
++#endif // VASKM
++}
+diff --git arch/x86/bhv/init/start.c arch/x86/bhv/init/start.c
+new file mode 100644
+index 000000000..25cce874a
+--- /dev/null
++++ arch/x86/bhv/init/start.c
+@@ -0,0 +1,12 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2024 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Tommaso Frassetto <tommaso.frassetto@bedrocksystems.com>
++ */
++#include <bhv/integrity.h>
++
++int __init_km bhv_start_arch(void)
++{
++	return bhv_start_integrity_arch();
++}
 diff --git arch/x86/bhv/integrity.c arch/x86/bhv/integrity.c
 new file mode 100644
-index 000000000..f2d6c9def
+index 000000000..32efee715
 --- /dev/null
 +++ arch/x86/bhv/integrity.c
-@@ -0,0 +1,571 @@
+@@ -0,0 +1,579 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -1722,7 +1786,7 @@ index 000000000..f2d6c9def
 +	uint64_t size;
 +} typedef table_data_t;
 +
-+static table_data_t table_data __ro_after_init;
++static table_data_t table_data __ro_after_init = { 0 };
 +
 +struct {
 +	uint64_t start_addr;
@@ -1731,7 +1795,10 @@ index 000000000..f2d6c9def
 +	uint32_t mem_type;
 +} typedef ro_region_t;
 +
-+static int __init_km bhv_alloc_node_idt_region(struct list_head *head)
++/**********************************************************
++ * start
++ **********************************************************/
++static int __init_km bhv_start_alloc_node_idt_region(struct list_head *head)
 +{
 +	uint64_t addr = bhv_virt_to_phys((void *)table_data.addr);
 +	uint64_t size = table_data.size;
@@ -1754,7 +1821,7 @@ index 000000000..f2d6c9def
 +	if (!table_data.valid)
 +		return 0;
 +
-+	rc = bhv_alloc_node_idt_region(&head);
++	rc = bhv_start_alloc_node_idt_region(&head);
 +	if (rc)
 +		goto out;
 +
@@ -1777,7 +1844,7 @@ index 000000000..f2d6c9def
 +
 +#ifndef VASKM // inside kernel tree
 +
-+static inline int __init_km rm_vdso_image_64(struct list_head *head)
++static inline int __init_km bhv_start_rm_vdso_image_64(struct list_head *head)
 +{
 +#ifdef CONFIG_X86_64
 +	return bhv_link_node_op_remove(head,
@@ -1787,7 +1854,7 @@ index 000000000..f2d6c9def
 +#endif
 +}
 +
-+static inline int __init_km rm_vdso_image_x32(struct list_head *head)
++static inline int __init_km bhv_start_rm_vdso_image_x32(struct list_head *head)
 +{
 +#ifdef CONFIG_X86_X32_ABI
 +	return bhv_link_node_op_remove(head,
@@ -1797,7 +1864,7 @@ index 000000000..f2d6c9def
 +#endif
 +}
 +
-+static inline int __init_km rm_vdso_image_32(struct list_head *head)
++static inline int __init_km bhv_start_rm_vdso_image_32(struct list_head *head)
 +{
 +#if defined CONFIG_X86_32 || (defined CONFIG_X86_64 && defined CONFIG_COMPAT)
 +	return bhv_link_node_op_remove(head,
@@ -1814,15 +1881,15 @@ index 000000000..f2d6c9def
 +
 +	LIST_HEAD(head);
 +
-+	rc = rm_vdso_image_64(&head);
++	rc = bhv_start_rm_vdso_image_64(&head);
 +	if (rc)
 +		goto out;
 +
-+	rc = rm_vdso_image_x32(&head);
++	rc = bhv_start_rm_vdso_image_x32(&head);
 +	if (rc)
 +		goto out;
 +
-+	rc = rm_vdso_image_32(&head);
++	rc = bhv_start_rm_vdso_image_32(&head);
 +	if (rc)
 +		goto out;
 +
@@ -2160,7 +2227,13 @@ index 000000000..f2d6c9def
 +
 +	return bhv_start_integrity_add_ro();
 +}
++/**********************************************************/
 +
++#define BHV_DIR_PTR_ENTRY_MASK 0x800FFFFFFFFFF89D
++
++/**********************************************************
++ * start
++ **********************************************************/
 +struct bhv_pw_data {
 +	bool set;
 +	uint64_t pgd_offset;
@@ -2194,25 +2267,8 @@ index 000000000..f2d6c9def
 +	.post_vma = NULL
 +};
 +
-+void bhv_get_pt_protect_data(bhv_integrity_init_ptpg_arg_t *init_ptpg_arg)
-+{
-+	BUG_ON(CONFIG_PGTABLE_LEVELS < 4 || CONFIG_PGTABLE_LEVELS > 5);
-+
-+	init_ptpg_arg->init_pgd = (uint64_t)bhv_virt_to_phys(
-+		KLN_SYMBOL_P(struct mm_struct *, init_mm)->pgd);
-+	init_ptpg_arg->pt_levels = pgtable_l5_enabled() ? 5 : 4;
-+	init_ptpg_arg->num_ranges = 2;
-+
-+	init_ptpg_arg->ranges[0] = (uint64_t)KLN_SYM(_stext);
-+	init_ptpg_arg->ranges[1] = (uint64_t)KLN_SYM(_etext);
-+	init_ptpg_arg->ranges[2] = (uint64_t)KLN_SYM(__start_rodata);
-+	init_ptpg_arg->ranges[3] = (uint64_t)KLN_SYM(__end_rodata);
-+}
-+
-+#define BHV_DIR_PTR_ENTRY_MASK 0x800FFFFFFFFFF89D
-+
-+void __init_km bhv_get_pt_protect_pgd_data(uint64_t *pgd_offset,
-+					   uint64_t *pgd_value)
++void __init_km bhv_start_get_pt_protect_pgd_data(uint64_t *pgd_offset,
++						 uint64_t *pgd_value)
 +{
 +	struct bhv_pw_data text_pw_data = { 0 };
 +	struct bhv_pw_data ro_pw_data = { 0 };
@@ -2234,6 +2290,27 @@ index 000000000..f2d6c9def
 +	*pgd_offset = text_pw_data.pgd_offset;
 +	*pgd_value = (text_pw_data.pgd_value & BHV_DIR_PTR_ENTRY_MASK);
 +}
++/**********************************************************/
++
++/**********************************************************
++ * late_start
++ **********************************************************/
++void bhv_late_start_get_pt_protect_data(
++	bhv_integrity_init_ptpg_arg_t *init_ptpg_arg)
++{
++	BUG_ON(CONFIG_PGTABLE_LEVELS < 4 || CONFIG_PGTABLE_LEVELS > 5);
++
++	init_ptpg_arg->init_pgd = (uint64_t)bhv_virt_to_phys(
++		KLN_SYMBOL_P(struct mm_struct *, init_mm)->pgd);
++	init_ptpg_arg->pt_levels = pgtable_l5_enabled() ? 5 : 4;
++	init_ptpg_arg->num_ranges = 2;
++
++	init_ptpg_arg->ranges[0] = (uint64_t)KLN_SYM(_stext);
++	init_ptpg_arg->ranges[1] = (uint64_t)KLN_SYM(_etext);
++	init_ptpg_arg->ranges[2] = (uint64_t)KLN_SYM(__start_rodata);
++	init_ptpg_arg->ranges[3] = (uint64_t)KLN_SYM(__end_rodata);
++}
++/**********************************************************/
 +
 +bool bhv_pt_protect_check_pgd_arch(struct mm_struct *mm, uint64_t pgd_offset,
 +				   uint64_t pgd_value)
@@ -2248,17 +2325,12 @@ index 000000000..f2d6c9def
 +	table_data.size = numpages * PAGE_SIZE;
 +	table_data.valid = true;
 +}
-+
-+void __init bhv_integrity_arch_init(void)
-+{
-+	memset(&table_data, 0, sizeof(table_data));
-+}
 diff --git arch/x86/bhv/patch_alternative.c arch/x86/bhv/patch_alternative.c
 new file mode 100644
-index 000000000..e6a4fe3c7
+index 000000000..aa42176b8
 --- /dev/null
 +++ arch/x86/bhv/patch_alternative.c
-@@ -0,0 +1,815 @@
+@@ -0,0 +1,854 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -3074,6 +3146,45 @@ index 000000000..e6a4fe3c7
 +	*nr_mods = MOD_NR;
 +	return &static_mods[0];
 +}
++
++#ifdef CONFIG_X86_KERNEL_IBT
++void __bhv_text bhv_apply_ibt_endbr_vault(s32 *s, bhv_patch_arg_t *bhv_arg)
++{
++	int ret;
++	u32 endbr, poison;
++	void *addr;
++
++	ret = bhv_vault_open_hyp();
++	if (ret)
++		return;
++
++	poison = gen_endbr_poison();
++	addr = (void *)s + *s;
++
++	if (get_kernel_nofault(endbr, addr))
++		goto out;
++
++	if (!is_endbr(endbr))
++		goto out;
++
++	bhv_patch_hypercall(addr, (uint8_t *)&poison, 4, false, bhv_arg);
++
++out:
++	bhv_vault_close_hyp();
++}
++
++void __init_or_module bhv_apply_ibt_endbr(s32 *s)
++{
++	unsigned long flags;
++	static bhv_patch_arg_t bhv_arg;
++
++	bhv_alternatives_lock();
++	local_irq_save(flags);
++	bhv_apply_ibt_endbr_vault(s, &bhv_arg);
++	local_irq_restore(flags);
++	bhv_alternatives_unlock();
++}
++#endif
 diff --git arch/x86/bhv/patch_jump_label.c arch/x86/bhv/patch_jump_label.c
 new file mode 100644
 index 000000000..18d202148
@@ -3358,72 +3469,6 @@ index 000000000..d208e4e93
 +	kfree(bhv_arg_ptr);
 +#endif // VASKM
 +}
-diff --git arch/x86/bhv/start.c arch/x86/bhv/start.c
-new file mode 100644
-index 000000000..234cc7ce9
---- /dev/null
-+++ arch/x86/bhv/start.c
-@@ -0,0 +1,60 @@
-+// SPDX-License-Identifier: GPL-2.0-only
-+/*
-+ * Copyright (C) 2022 - BedRock Systems Inc
-+ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
-+ *          Tommaso Frassetto <tommaso.frassetto@bedrocksystems.com>
-+ */
-+
-+#include <linux/types.h> // This is here so that hypervisor.h knows bool
-+#include <asm/hypervisor.h>
-+#include <asm/processor.h>
-+#include <asm/x86_init.h>
-+
-+#include <asm/bhv/integrity.h>
-+#include <bhv/integrity.h>
-+#include <bhv/start.h>
-+
-+#ifndef VASKM // inside kernel tree
-+
-+static uint32_t __init bhv_detect(void)
-+{
-+	if (boot_cpu_data.cpuid_level < 0)
-+		return 0;	/* So we don't blow up on old processors */
-+
-+	if (boot_cpu_has(X86_FEATURE_HYPERVISOR))
-+		return hypervisor_cpuid_base("BHV.VMM.VAS.", 0);
-+
-+	return 0;
-+}
-+
-+static void __init bhv_init_platform_x86(void)
-+{
-+	bhv_integrity_arch_init();
-+	bhv_init_platform();
-+}
-+
-+const __initconst struct hypervisor_x86 x86_hyper_bhv = {
-+	.name = "BHV BRASS",
-+	.detect = bhv_detect,
-+	.type = X86_HYPER_BHV,
-+	.init.guest_late_init = x86_init_noop,
-+	.init.x2apic_available = bool_x86_init_noop,
-+	.init.init_platform = bhv_init_platform_x86
-+};
-+
-+int __init_km bhv_start_arch(void)
-+{
-+	return bhv_start_integrity_arch();
-+}
-+
-+#else // out of tree
-+
-+#include <common.h>
-+
-+int __init_km bhv_start_arch(void)
-+{
-+	bhv_integrity_arch_init();
-+	return bhv_start_integrity_arch();
-+}
-+
-+#endif // VASKM
 diff --git arch/x86/entry/common.c arch/x86/entry/common.c
 index 93a3122cd..e5b32e57d 100644
 --- arch/x86/entry/common.c
@@ -3579,10 +3624,10 @@ index 000000000..2c2890de4
 +#endif /* __ASM_BHV_HYPERCALL_H__ */
 diff --git arch/x86/include/asm/bhv/integrity.h arch/x86/include/asm/bhv/integrity.h
 new file mode 100644
-index 000000000..d1776417d
+index 000000000..8e8756875
 --- /dev/null
 +++ arch/x86/include/asm/bhv/integrity.h
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,33 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -3596,7 +3641,6 @@ index 000000000..d1776417d
 +
 +#include <bhv/bhv.h>
 +
-+void __init bhv_integrity_arch_init(void);
 +void __init bhv_register_idt(uint64_t addr,
 +							 int numpages);
 +
@@ -3886,7 +3930,7 @@ index 9f69cc497..f2b8695dc 100644
  	unsigned long r15;
  	unsigned long r14;
 diff --git arch/x86/kernel/alternative.c arch/x86/kernel/alternative.c
-index e6e63a9d2..e748d5af1 100644
+index d58621f0f..c5b2677b7 100644
 --- arch/x86/kernel/alternative.c
 +++ arch/x86/kernel/alternative.c
 @@ -30,6 +30,10 @@
@@ -3912,9 +3956,9 @@ index e6e63a9d2..e748d5af1 100644
 +#endif /* CONFIG_BHV_VAS */
 +
  	DPRINTK("alt table %px, -> %px", start, end);
+ 
  	/*
- 	 * The scan order should be from start to end. A later scanned
-@@ -620,6 +631,14 @@ void __init_or_module noinline apply_retpolines(s32 *start, s32 *end)
+@@ -633,6 +644,14 @@ void __init_or_module noinline apply_retpolines(s32 *start, s32 *end)
  {
  	s32 *s;
  
@@ -3929,7 +3973,7 @@ index e6e63a9d2..e748d5af1 100644
  	for (s = start; s < end; s++) {
  		void *addr = (void *)s + *s;
  		struct insn insn;
-@@ -693,6 +712,14 @@ void __init_or_module noinline apply_returns(s32 *start, s32 *end)
+@@ -706,6 +725,14 @@ void __init_or_module noinline apply_returns(s32 *start, s32 *end)
  {
  	s32 *s;
  
@@ -3944,7 +3988,7 @@ index e6e63a9d2..e748d5af1 100644
  	for (s = start; s < end; s++) {
  		void *dest = NULL, *addr = (void *)s + *s;
  		struct insn insn;
-@@ -769,7 +796,6 @@ static void alternatives_smp_unlock(const s32 *start, const s32 *end,
+@@ -782,7 +809,6 @@ static void alternatives_smp_unlock(const s32 *start, const s32 *end,
  			text_poke(ptr, ((unsigned char []){0x3E}), 1);
  	}
  }
@@ -3952,7 +3996,7 @@ index e6e63a9d2..e748d5af1 100644
  struct smp_alt_module {
  	/* what is this ??? */
  	struct module	*mod;
-@@ -795,6 +821,11 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
+@@ -808,6 +834,11 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
  {
  	struct smp_alt_module *smp;
  
@@ -3964,7 +4008,7 @@ index e6e63a9d2..e748d5af1 100644
  	mutex_lock(&text_mutex);
  	if (!uniproc_patched)
  		goto unlock;
-@@ -820,7 +851,26 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
+@@ -833,7 +864,26 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
  
  	list_add_tail(&smp->next, &smp_alt_modules);
  smp_unlock:
@@ -3991,7 +4035,7 @@ index e6e63a9d2..e748d5af1 100644
  unlock:
  	mutex_unlock(&text_mutex);
  }
-@@ -854,9 +904,26 @@ void alternatives_enable_smp(void)
+@@ -867,9 +917,26 @@ void alternatives_enable_smp(void)
  		BUG_ON(num_online_cpus() != 1);
  		clear_cpu_cap(&boot_cpu_data, X86_FEATURE_UP);
  		clear_cpu_cap(&cpu_data(0), X86_FEATURE_UP);
@@ -4019,7 +4063,7 @@ index e6e63a9d2..e748d5af1 100644
  		uniproc_patched = false;
  	}
  	mutex_unlock(&text_mutex);
-@@ -897,6 +964,14 @@ void __init_or_module apply_paravirt(struct paravirt_patch_site *start,
+@@ -910,6 +977,14 @@ void __init_or_module apply_paravirt(struct paravirt_patch_site *start,
  	struct paravirt_patch_site *p;
  	char insn_buff[MAX_PATCH_LEN];
  
@@ -4034,7 +4078,7 @@ index e6e63a9d2..e748d5af1 100644
  	for (p = start; p < end; p++) {
  		unsigned int used;
  
-@@ -1123,6 +1198,9 @@ static inline temp_mm_state_t use_temporary_mm(struct mm_struct *mm)
+@@ -1136,6 +1211,9 @@ static inline temp_mm_state_t use_temporary_mm(struct mm_struct *mm)
  
  	temp_state.mm = this_cpu_read(cpu_tlbstate.loaded_mm);
  	switch_mm_irqs_off(NULL, mm, current);
@@ -4044,7 +4088,7 @@ index e6e63a9d2..e748d5af1 100644
  
  	/*
  	 * If breakpoints are enabled, disable them while the temporary mm is
-@@ -1145,6 +1223,9 @@ static inline void unuse_temporary_mm(temp_mm_state_t prev_state)
+@@ -1158,6 +1236,9 @@ static inline void unuse_temporary_mm(temp_mm_state_t prev_state)
  {
  	lockdep_assert_irqs_disabled();
  	switch_mm_irqs_off(NULL, prev_state.mm, current);
@@ -4293,7 +4337,7 @@ index 759b986b7..34eed9d04 100644
  	case CALL:
  		code = text_gen_insn(CALL_INSN_OPCODE, insn, func);
 diff --git arch/x86/kernel/vmlinux.lds.S arch/x86/kernel/vmlinux.lds.S
-index f0d4500ae..261c764df 100644
+index 740f87d8a..b70172d52 100644
 --- arch/x86/kernel/vmlinux.lds.S
 +++ arch/x86/kernel/vmlinux.lds.S
 @@ -150,6 +150,7 @@ SECTIONS
@@ -4400,20 +4444,19 @@ index 9c1545c37..4aa732b16 100644
  		return;
  
 diff --git arch/x86/mm/init.c arch/x86/mm/init.c
-index dd15fdee4..fe806a0bb 100644
+index dd15fdee4..618a855e6 100644
 --- arch/x86/mm/init.c
 +++ arch/x86/mm/init.c
-@@ -39,6 +39,9 @@
+@@ -39,6 +39,8 @@
  
  #include "mm_internal.h"
  
-+#include <bhv/bhv.h>
-+#include <bhv/start.h>
++#include <bhv/init/start.h>
 +
  /*
   * Tables translating between page_cache_type_t and pte encoding.
   *
-@@ -959,6 +962,8 @@ void __ref free_initmem(void)
+@@ -959,6 +961,8 @@ void __ref free_initmem(void)
  
  	mem_encrypt_free_decrypted_mem();
  
@@ -4503,6 +4546,172 @@ index 569ac1d57..c892cbd91 100644
  			return;
  
  		/*
+diff --git certs/blacklist.c certs/blacklist.c
+index c973de883..49b23c932 100644
+--- certs/blacklist.c
++++ certs/blacklist.c
+@@ -18,6 +18,8 @@
+ #include "blacklist.h"
+ #include "common.h"
+ 
++#include <bhv/keyring.h>
++
+ static struct key *blacklist_keyring;
+ 
+ #ifdef CONFIG_SYSTEM_REVOCATION_LIST
+@@ -182,7 +184,9 @@ int add_key_to_revocation_list(const char *data, size_t size)
+  */
+ int is_key_on_revocation_list(struct pkcs7_message *pkcs7)
+ {
+-	int ret;
++	int ret = bhv_keyring_verify(blacklist_keyring, &blacklist_keyring);
++	if (ret)
++		return -EPERM;
+ 
+ 	ret = pkcs7_validate_trust(pkcs7, blacklist_keyring);
+ 
+@@ -219,6 +223,10 @@ static int __init blacklist_init(void)
+ 	for (bl = blacklist_hashes; *bl; bl++)
+ 		if (mark_hash_blacklisted(*bl) < 0)
+ 			pr_err("- blacklisting failed\n");
++
++	if (bhv_keyring_register_system_trusted(&blacklist_keyring))
++		panic("Can't register system blacklist keyring\n");
++
+ 	return 0;
+ }
+ 
+diff --git certs/system_keyring.c certs/system_keyring.c
+index a44a8915c..ec7ba5bf2 100644
+--- certs/system_keyring.c
++++ certs/system_keyring.c
+@@ -17,6 +17,8 @@
+ #include <crypto/pkcs7.h>
+ #include "common.h"
+ 
++#include <bhv/keyring.h>
++
+ static struct key *builtin_trusted_keys;
+ #ifdef CONFIG_SECONDARY_TRUSTED_KEYRING
+ static struct key *secondary_trusted_keys;
+@@ -39,6 +41,11 @@ int restrict_link_by_builtin_trusted(struct key *dest_keyring,
+ 				     const union key_payload *payload,
+ 				     struct key *restriction_key)
+ {
++	int rc = bhv_keyring_verify_locked(builtin_trusted_keys,
++					   &builtin_trusted_keys);
++	if (rc)
++		return rc;
++
+ 	return restrict_link_by_signature(dest_keyring, type, payload,
+ 					  builtin_trusted_keys);
+ }
+@@ -58,6 +65,8 @@ int restrict_link_by_builtin_and_secondary_trusted(
+ 	const union key_payload *payload,
+ 	struct key *restrict_key)
+ {
++	int rc = 0;
++
+ 	/* If we have a secondary trusted keyring, then that contains a link
+ 	 * through to the builtin keyring and the search will follow that link.
+ 	 */
+@@ -67,6 +76,12 @@ int restrict_link_by_builtin_and_secondary_trusted(
+ 		/* Allow the builtin keyring to be added to the secondary */
+ 		return 0;
+ 
++	rc = bhv_keyring_verify_locked(secondary_trusted_keys,
++				       &secondary_trusted_keys);
++	if (rc)
++		return rc;
++
++
+ 	return restrict_link_by_signature(dest_keyring, type, payload,
+ 					  secondary_trusted_keys);
+ }
+@@ -107,6 +122,9 @@ static __init int system_trusted_keyring_init(void)
+ 	if (IS_ERR(builtin_trusted_keys))
+ 		panic("Can't allocate builtin trusted keyring\n");
+ 
++	if (bhv_keyring_register_system_trusted(&builtin_trusted_keys))
++		panic("Can't register builtin trusted keyring\n");
++
+ #ifdef CONFIG_SECONDARY_TRUSTED_KEYRING
+ 	secondary_trusted_keys =
+ 		keyring_alloc(".secondary_trusted_keys",
+@@ -122,6 +140,9 @@ static __init int system_trusted_keyring_init(void)
+ 
+ 	if (key_link(secondary_trusted_keys, builtin_trusted_keys) < 0)
+ 		panic("Can't link trusted keyrings\n");
++
++	if (bhv_keyring_register_system_trusted(&secondary_trusted_keys))
++		panic("Can't register secondary trusted keyring\n");
+ #endif
+ 
+ 	return 0;
+@@ -137,6 +158,11 @@ device_initcall(system_trusted_keyring_init);
+  */
+ static __init int load_system_certificate_list(void)
+ {
++	int rc = bhv_keyring_verify(builtin_trusted_keys,
++				    &builtin_trusted_keys);
++	if (rc)
++		return rc;
++
+ 	pr_notice("Loading compiled-in X.509 certificates\n");
+ 
+ 	return load_certificate_list(system_certificate_list, system_certificate_list_size,
+@@ -180,15 +206,35 @@ int verify_pkcs7_message_sig(const void *data, size_t len,
+ 		goto error;
+ 
+ 	if (!trusted_keys) {
++		ret = bhv_keyring_verify(builtin_trusted_keys,
++					 &builtin_trusted_keys);
++		if (ret)
++			goto error;
++
+ 		trusted_keys = builtin_trusted_keys;
+ 	} else if (trusted_keys == VERIFY_USE_SECONDARY_KEYRING) {
+ #ifdef CONFIG_SECONDARY_TRUSTED_KEYRING
++		ret = bhv_keyring_verify(secondary_trusted_keys,
++					 &secondary_trusted_keys);
++		if (ret)
++			goto error;
++
+ 		trusted_keys = secondary_trusted_keys;
+ #else
++		ret = bhv_keyring_verify(builtin_trusted_keys,
++					 &builtin_trusted_keys);
++		if (ret)
++			goto error;
++
+ 		trusted_keys = builtin_trusted_keys;
+ #endif
+ 	} else if (trusted_keys == VERIFY_USE_PLATFORM_KEYRING) {
+ #ifdef CONFIG_INTEGRITY_PLATFORM_KEYRING
++		ret = bhv_keyring_verify(platform_trusted_keys,
++					 &platform_trusted_keys);
++		if (ret)
++			goto error;
++
+ 		trusted_keys = platform_trusted_keys;
+ #else
+ 		trusted_keys = NULL;
+@@ -205,6 +251,7 @@ int verify_pkcs7_message_sig(const void *data, size_t len,
+ 			goto error;
+ 		}
+ 	}
++
+ 	ret = pkcs7_validate_trust(pkcs7, trusted_keys);
+ 	if (ret < 0) {
+ 		if (ret == -ENOKEY)
+@@ -273,5 +320,7 @@ EXPORT_SYMBOL_GPL(verify_pkcs7_signature);
+ void __init set_platform_trusted_keys(struct key *keyring)
+ {
+ 	platform_trusted_keys = keyring;
++	if (bhv_keyring_register_system_trusted(&platform_trusted_keys))
++		panic("Can't register platform trusted keyring\n");
+ }
+ #endif
 diff --git drivers/block/drbd/drbd_main.c drivers/block/drbd/drbd_main.c
 index 420bdaf8c..ed18e5847 100644
 --- drivers/block/drbd/drbd_main.c
@@ -4646,7 +4855,7 @@ index 094e82a12..b9c8a4189 100644
  	.read_iter	= hung_up_tty_read,
  	.write_iter	= hung_up_tty_write,
 diff --git drivers/video/fbdev/uvesafb.c drivers/video/fbdev/uvesafb.c
-index 661f12742..15385e5a8 100644
+index d999a7cdb..a8321a97c 100644
 --- drivers/video/fbdev/uvesafb.c
 +++ drivers/video/fbdev/uvesafb.c
 @@ -34,7 +34,13 @@ static struct cb_id uvesafb_cn_id = {
@@ -4871,7 +5080,7 @@ index f42cc1fe0..dd2fffd12 100644
  	.read_iter	= ext4_file_read_iter,
  	.write_iter	= ext4_file_write_iter,
 diff --git fs/inode.c fs/inode.c
-index 311237e8d..41a6f67fe 100644
+index 5c7139aa2..0db17eb9a 100644
 --- fs/inode.c
 +++ fs/inode.c
 @@ -24,6 +24,8 @@
@@ -5362,7 +5571,7 @@ index 707477e27..dc23a11a4 100644
  	.read		= generic_read_dir,
  	.iterate_shared	= proc_tgid_net_readdir,
 diff --git fs/proc/proc_sysctl.c fs/proc/proc_sysctl.c
-index 682f2bf2e..23c957238 100644
+index aff9593fe..a02dc69c0 100644
 --- fs/proc/proc_sysctl.c
 +++ fs/proc/proc_sysctl.c
 @@ -20,9 +20,9 @@
@@ -5466,10 +5675,10 @@ index 39b103807..0d16b47ef 100644
  	.read		= seq_read,
  	.llseek		= seq_lseek,
 diff --git fs/proc/task_nommu.c fs/proc/task_nommu.c
-index a6d21fc00..b5cdedaf0 100644
+index 97f387d30..427f6eae3 100644
 --- fs/proc/task_nommu.c
 +++ fs/proc/task_nommu.c
-@@ -293,7 +293,7 @@ static int pid_maps_open(struct inode *inode, struct file *file)
+@@ -296,7 +296,7 @@ static int pid_maps_open(struct inode *inode, struct file *file)
  	return maps_open(inode, file, &proc_pid_maps_ops);
  }
  
@@ -5643,10 +5852,10 @@ index 44103f948..9a2ba3858 100644
  
 diff --git include/bhv/acl.h include/bhv/acl.h
 new file mode 100644
-index 000000000..17a08085a
+index 000000000..188c6153c
 --- /dev/null
 +++ include/bhv/acl.h
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,65 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -5663,7 +5872,11 @@ index 000000000..17a08085a
 +#include <bhv/bhv.h>
 +#include <bhv/interface/common.h>
 +
-+void __init bhv_acl_mm_init(void);
++/************************************************************
++ * mm_init
++ ************************************************************/
++void __init bhv_mm_init_acl(void);
++/************************************************************/
 +
 +static inline bool bhv_acl_is_proc_acl_enabled(void)
 +{
@@ -5711,10 +5924,10 @@ index 000000000..17a08085a
 \ No newline at end of file
 diff --git include/bhv/bhv.h include/bhv/bhv.h
 new file mode 100644
-index 000000000..03a83c958
+index 000000000..c1f21a721
 --- /dev/null
 +++ include/bhv/bhv.h
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,84 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -5758,10 +5971,7 @@ index 000000000..03a83c958
 +	return bhv_initialized;
 +}
 +
-+void __init bhv_mm_init(void);
-+
 +struct page *bhv_vmalloc_to_page(const void *vmalloc_addr);
-+
 +
 +extern bool __bhv_init_done;
 +
@@ -5793,9 +6003,6 @@ index 000000000..03a83c958
 +static inline bool is_bhv_initialized(void)
 +{
 +	return false;
-+}
-+static inline void bhv_mm_init(void)
-+{
 +}
 +
 +static inline phys_addr_t bhv_virt_to_phys(volatile void *address)
@@ -5838,12 +6045,70 @@ index 000000000..35d267d47
 +
 +#endif /* __BHV_BHV_PRINT_H__ */
 \ No newline at end of file
+diff --git include/bhv/bhv_trace.h include/bhv/bhv_trace.h
+new file mode 100644
+index 000000000..b311586de
+--- /dev/null
++++ include/bhv/bhv_trace.h
+@@ -0,0 +1,52 @@
++#ifdef CONFIG_BHV_TRACEPOINTS
++
++#undef TRACE_SYSTEM
++#define TRACE_SYSTEM bhv
++
++#if !defined(__BHV_TRACE_H__) || defined(TRACE_HEADER_MULTI_READ)
++#define __BHV_TRACE_H__
++
++#include <linux/tracepoint.h>
++
++#include <bhv/version.h>
++
++DECLARE_EVENT_CLASS(bhv_trace_class,
++	TP_PROTO(uint32_t bhv_target, uint32_t bhv_backend, uint32_t op),
++	TP_ARGS(bhv_target, bhv_backend, op),
++
++	TP_STRUCT__entry(
++		__field(uint32_t, bhv_target)
++		__field(uint32_t, bhv_backend)
++		__field(uint32_t, op)
++	),
++
++	TP_fast_assign(
++		__entry->bhv_target = bhv_target;
++		__entry->bhv_backend = bhv_backend;
++		__entry->op = op;
++	),
++
++	TP_printk("BHV hypercall: target=%u backend=%u op=%u",
++		  __entry->bhv_target, __entry->bhv_backend, __entry->op)
++);
++
++DEFINE_EVENT(bhv_trace_class, bhv_hypercall_start,
++	     TP_PROTO(uint32_t bhv_target, uint32_t bhv_backend, uint32_t op),
++             TP_ARGS(bhv_target, bhv_backend, op));
++
++DEFINE_EVENT(bhv_trace_class, bhv_hypercall_end,
++	     TP_PROTO(uint32_t bhv_target, uint32_t bhv_backend, uint32_t op),
++             TP_ARGS(bhv_target, bhv_backend, op));
++
++#endif /* __BHV_TRACE_H__ */
++
++/* This part must be outside protection */
++#undef TRACE_INCLUDE_PATH
++#undef TRACE_INCLUDE_FILE
++
++#define TRACE_INCLUDE_PATH ../../include/bhv
++#define TRACE_INCLUDE_FILE bhv_trace
++
++#include <trace/define_trace.h>
++
++#endif /* CONFIG_BHV_TRACEPOINTS */
 diff --git include/bhv/creds.h include/bhv/creds.h
 new file mode 100644
-index 000000000..a35690733
+index 000000000..d59d5c47f
 --- /dev/null
 +++ include/bhv/creds.h
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,90 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -5879,8 +6144,17 @@ index 000000000..a35690733
 +void bhv_cred_release(struct cred *c);
 +int bhv_cred_verify(struct task_struct *t);
 +
-+int __init bhv_cred_init(void);
-+void __init bhv_cred_mm_init(void);
++/******************************************************************
++ * init
++ ******************************************************************/
++int __init bhv_init_cred(void);
++/******************************************************************/
++
++/******************************************************************
++ * mm_init
++ ******************************************************************/
++void __init bhv_mm_init_cred(void);
++/******************************************************************/
 +
 +#else /* CONFIG_BHV_VAS */
 +
@@ -5922,13 +6196,6 @@ index 000000000..a35690733
 +{
 +	return 0;
 +}
-+
-+static inline void bhv_cred_mm_init(void)
-+{
-+}
-+
-+
-+
 +#endif // defined CONFIG_BHV_VAS
 +
 +#endif /* __BHV_CREDS_H__ */
@@ -6166,10 +6433,10 @@ index 000000000..84dc59963
 +#endif /* __BHV_DOMAIN_H__ */
 diff --git include/bhv/event.h include/bhv/event.h
 new file mode 100644
-index 000000000..5b91e541a
+index 000000000..31f6509dc
 --- /dev/null
 +++ include/bhv/event.h
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,123 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -6185,6 +6452,7 @@ index 000000000..5b91e541a
 +#include <linux/types.h>
 +#include <linux/sched.h>
 +#include <linux/slab.h>
++#include <linux/version.h>
 +
 +#include <bhv/bhv.h>
 +#include <bhv/interface/common.h>
@@ -6209,10 +6477,10 @@ index 000000000..5b91e541a
 +		return PTR_ERR(path);
 +	}
 +
-+	kfree(tmp_buf);
-+
 +	strncpy(buf, path, max_size);
 +	buf[max_size - 1] = '\0';
++
++	kfree(tmp_buf);
 +
 +	return 0;
 +}
@@ -6234,6 +6502,24 @@ index 000000000..5b91e541a
 +			     EVENT_MAX_PATH_SZ);
 +}
 +
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
++static inline void _copy_cap(bhv_event_context_t *context)
++{
++	u64 val = current_cred_xxx(cap_effective).val;
++	memcpy(&context->cap_effective, &val, sizeof(context->cap_effective));
++	val = current_cred_xxx(cap_permitted).val;
++	memcpy(&context->cap_permitted, &val, sizeof(context->cap_permitted));
++}
++#else
++static inline void _copy_cap(bhv_event_context_t *context)
++{
++	memcpy(&context->cap_effective, &current_cred_xxx(cap_effective).cap[0],
++	       sizeof(context->cap_effective));
++	memcpy(&context->cap_permitted, &current_cred_xxx(cap_permitted).cap[0],
++	       sizeof(context->cap_permitted));
++}
++#endif
++
 +static inline int populate_event_context(bhv_event_context_t *context,
 +					 bool get_full_path)
 +{
@@ -6246,10 +6532,7 @@ index 000000000..5b91e541a
 +	context->euid = current_euid().val;
 +	context->gid = current_gid().val;
 +	context->egid = current_egid().val;
-+	memcpy(&context->cap_effective, &current_cred_xxx(cap_effective).cap[0],
-+	       sizeof(context->cap_effective));
-+	memcpy(&context->cap_permitted, &current_cred_xxx(cap_permitted).cap[0],
-+	       sizeof(context->cap_permitted));
++	_copy_cap(context);
 +	context->pid = current->tgid;
 +
 +	rv = get_path_from_task(current, context->comm, get_full_path);
@@ -6279,10 +6562,10 @@ index 000000000..5b91e541a
 +#endif /* __BHV_EVENT_H__ */
 diff --git include/bhv/file_protection.h include/bhv/file_protection.h
 new file mode 100644
-index 000000000..e8765d6fd
+index 000000000..e5f21de1d
 --- /dev/null
 +++ include/bhv/file_protection.h
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,90 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -6302,7 +6585,12 @@ index 000000000..e8765d6fd
 +
 +extern bhv_file_protection_config_t bhv_file_protection_config __ro_after_init;
 +
-+void __init bhv_file_protection_init(void);
++/***********************************************************************
++ * mm_init
++ ***********************************************************************/
++void __init bhv_mm_init_file_protection(void);
++/***********************************************************************/
++
 +static inline bool bhv_file_protection_is_enabled(void)
 +{
 +	if (!is_bhv_initialized() || bhv_configuration_bitmap == NULL)
@@ -6371,10 +6659,10 @@ index 000000000..e8765d6fd
 \ No newline at end of file
 diff --git include/bhv/fileops_internal.h include/bhv/fileops_internal.h
 new file mode 100644
-index 000000000..ab3f791de
+index 000000000..417500058
 --- /dev/null
 +++ include/bhv/fileops_internal.h
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,44 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -6409,7 +6697,12 @@ index 000000000..ab3f791de
 +// additional /proc/ file operations
 +extern struct file_operations const *proc_fops[] __ro_after_init;
 +
-+void __init bhv_fileops_init(void);
++/******************************************************************
++ * init
++ ******************************************************************/
++void __init bhv_init_fileops(void);
++/******************************************************************/
++
 +bool is_valid_proc_fop(const struct file_operations **);
 +
 +#endif /* CONFIG_BHV_VAS */
@@ -6639,10 +6932,10 @@ index 000000000..abd9d4eeb
 \ No newline at end of file
 diff --git include/bhv/fileops_protection.h include/bhv/fileops_protection.h
 new file mode 100644
-index 000000000..9e5aaa330
+index 000000000..1bdd71a05
 --- /dev/null
 +++ include/bhv/fileops_protection.h
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,27 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -6657,7 +6950,11 @@ index 000000000..9e5aaa330
 +#include <linux/init.h>
 +#include <bhv/interface/common.h>
 +
-+void __init bhv_fileops_protection_mm_init(void);
++/***********************************************************************
++ * mm_init
++ ***********************************************************************/
++void __init bhv_mm_init_fileops_protection(void);
++/***********************************************************************/
 +
 +bool bhv_strict_fileops_enforced(void);
 +bool bhv_block_fileops(const char *, u8, bool, const void *);
@@ -6668,10 +6965,10 @@ index 000000000..9e5aaa330
 +#endif /* __BHV_FILEOPS_PROTECTION_H__ */
 diff --git include/bhv/guestconn.h include/bhv/guestconn.h
 new file mode 100644
-index 000000000..a18468423
+index 000000000..b9f693f83
 --- /dev/null
 +++ include/bhv/guestconn.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,43 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -6691,9 +6988,23 @@ index 000000000..a18468423
 +
 +typedef guestconn_msg_header_t guestconn_msg_t;
 +
-+int __init bhv_guestconn_init(uint32_t cid, uint32_t port);
-+void __init bhv_guestconn_mm_init(void);
-+void bhv_guestconn_start(void);
++/*********************************************************
++ * init
++ *********************************************************/
++int __init bhv_init_guestconn(uint32_t cid, uint32_t port);
++/*********************************************************/
++
++/*********************************************************
++ * start
++ *********************************************************/
++void bhv_start_guestconn(void);
++/*********************************************************/
++
++/*********************************************************
++ * mm_init
++ *********************************************************/
++void __init bhv_mm_init_guestconn(void);
++/*********************************************************/
 +
 +guestconn_msg_t *bhv_guestconn_alloc_msg(void);
 +void bhv_guestconn_free_msg(guestconn_msg_t *msg);
@@ -6704,10 +7015,10 @@ index 000000000..a18468423
 \ No newline at end of file
 diff --git include/bhv/guestlog.h include/bhv/guestlog.h
 new file mode 100644
-index 000000000..ce086da53
+index 000000000..adfb5e422
 --- /dev/null
 +++ include/bhv/guestlog.h
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,151 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -6727,7 +7038,11 @@ index 000000000..ce086da53
 +
 +extern bhv_guestlog_config_t bhv_guestlog_config __ro_after_init;
 +
-+int __init bhv_guestlog_init(void);
++/*********************************************************
++ * init
++ *********************************************************/
++int __init bhv_init_guestlog(void);
++/*********************************************************/
 +
 +static inline bool bhv_guestlog_enabled(void)
 +{
@@ -6882,33 +7197,111 @@ index 000000000..8f4ebeb4f
 +}
 +#endif /* __BHV_GUESTPOLICY_H__ */
 \ No newline at end of file
-diff --git include/bhv/init.h include/bhv/init.h
+diff --git include/bhv/init/init.h include/bhv/init/init.h
 new file mode 100644
-index 000000000..67fe9bdb8
+index 000000000..ab0777c99
 --- /dev/null
-+++ include/bhv/init.h
-@@ -0,0 +1,21 @@
++++ include/bhv/init/init.h
+@@ -0,0 +1,26 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022 - BedRock Systems Inc
++ * Copyright (C) 2024 - BedRock Systems Inc
 + * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
 + */
 +
-+#ifndef __BHV_INIT_H__
-+#define __BHV_INIT_H__
++#ifndef __BHV_INIT_INIT_H__
++#define __BHV_INIT_INIT_H__
 +
++#ifdef CONFIG_BHV_VAS
 +#include <bhv/interface/integrity.h>
-+#include <bhv/interface/init.h>
 +
 +/* This constant must take into account any regions added in bhv_init_hyp_arch(...) */
 +#define BHV_INIT_MAX_REGIONS 7
 +
-+int __init bhv_init_hyp(void *bhv_data, size_t bhv_data_size);
++void __init bhv_init_platform(void);
++void __init bhv_init_arch(void);
 +void __init bhv_init_hyp_arch(bhv_mem_region_t *init_phys_mem_regions,
 +			      unsigned int *region_counter);
-+int bhv_start_hyp(bhv_init_start_config_t *config);
++#else /* CONFIG_BHV_VAS */
++static inline void bhv_init_platform(void)
++{
++}
++#endif /* CONFIG_BHV_VAS */
 +
-+#endif /* __BHV_INIT_H__ */
++#endif /* __BHV_INIT_INIT_H__ */
+diff --git include/bhv/init/late_start.h include/bhv/init/late_start.h
+new file mode 100644
+index 000000000..af4dc71e2
+--- /dev/null
++++ include/bhv/init/late_start.h
+@@ -0,0 +1,17 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2024 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
++#ifndef __BHV_INIT_LATE_START_H__
++#define __BHV_INIT_LATE_START_H__
++
++#ifdef CONFIG_BHV_VAS
++void bhv_late_start(void);
++#else /* CONFIG_BHV_VAS */
++static inline void bhv_late_start(void)
++{
++}
++#endif /* CONFIG_BHV_VAS */
++#endif /* __BHV_INIT_LATE_START_H__ */
+diff --git include/bhv/init/mm_init.h include/bhv/init/mm_init.h
+new file mode 100644
+index 000000000..48578cf8b
+--- /dev/null
++++ include/bhv/init/mm_init.h
+@@ -0,0 +1,16 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2024 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
++#ifndef __BHV_INIT_MM_INIT_H__
++#define __BHV_INIT_MM_INIT_H__
++#ifdef CONFIG_BHV_VAS
++void __init bhv_mm_init(void);
++#else /* CONFIG_BHV_VAS */
++static inline void bhv_mm_init(void)
++{
++}
++#endif /* CONFIG_BHV_VAS */
++#endif /* __BHV_INIT_MM_INIT_H__ */
+diff --git include/bhv/init/start.h include/bhv/init/start.h
+new file mode 100644
+index 000000000..d1c10f1de
+--- /dev/null
++++ include/bhv/init/start.h
+@@ -0,0 +1,22 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2024 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
++#ifndef __BHV_INIT_START_H__
++#define __BHV_INIT_START_H__
++
++#ifdef CONFIG_BHV_VAS
++#include <bhv/interface/init.h>
++
++bool bhv_start(void);
++int bhv_start_arch(void);
++#else /* CONFIG_BHV_VAS */
++static inline bool bhv_start(void)
++{
++	return true;
++}
++#endif /* CONFIG_BHV_VAS */
++
++#endif /* __BHV_INIT_START_H__ */
 diff --git include/bhv/inode.h include/bhv/inode.h
 new file mode 100644
 index 000000000..90c4ed02e
@@ -6966,10 +7359,10 @@ index 000000000..90c4ed02e
 +
 diff --git include/bhv/integrity.h include/bhv/integrity.h
 new file mode 100644
-index 000000000..0372a3b1c
+index 000000000..ac35c21ba
 --- /dev/null
 +++ include/bhv/integrity.h
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,267 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -6998,6 +7391,29 @@ index 000000000..0372a3b1c
 +
 +extern struct kmem_cache *bhv_mem_region_cache;
 +
++/************************************************************
++ * start
++ ************************************************************/
++int bhv_start_integrity_arch(void);
++void __init_km bhv_start_ptpg(void);
++void __init_km bhv_start_get_pt_protect_pgd_data(uint64_t *pgd_offset,
++						 uint64_t *pgd_value);
++/************************************************************/
++
++/************************************************************
++ * mm_init
++ ************************************************************/
++void __init bhv_mm_init_integrity(void);
++/************************************************************/
++
++/************************************************************
++ * late_start
++ ************************************************************/
++int bhv_late_start_init_ptpg(void);
++void bhv_late_start_get_pt_protect_data(
++	bhv_integrity_init_ptpg_arg_t *init_ptpg_arg);
++/************************************************************/
++
 +static inline bool bhv_integrity_is_enabled(void)
 +{
 +	if (!is_bhv_initialized())
@@ -7018,10 +7434,6 @@ index 000000000..0372a3b1c
 +			      bhv_configuration_bitmap);
 +}
 +
-+void __init bhv_integrity_mm_init(void);
-+
-+int bhv_start_integrity_arch(void);
-+
 +extern bool bhv_allow_kmod_loads;
 +extern bool bhv_allow_patch;
 +extern bool bhv_integrity_freeze_create_currently_frozen;
@@ -7037,11 +7449,6 @@ index 000000000..0372a3b1c
 +int bhv_remove_kern_phys_mem_region_by_region_hyp(bhv_mem_region_t *region_head);
 +int bhv_remove_kern_phys_mem_region_by_owner_hyp(uint64_t owner);
 +
-+void __init_km bhv_start_ptpg(void);
-+void __init_km bhv_get_pt_protect_pgd_data(uint64_t *pgd_offset,
-+					   uint64_t *pgd_value);
-+int bhv_integrity_init_ptpg(void);
-+void bhv_get_pt_protect_data(bhv_integrity_init_ptpg_arg_t *init_ptpg_arg);
 +void bhv_pt_protect_check_pgd(struct mm_struct *mm);
 +bool bhv_pt_protect_check_pgd_arch(struct mm_struct *mm, uint64_t pgd_offset,
 +				   uint64_t pgd_value);
@@ -7187,10 +7594,6 @@ index 000000000..0372a3b1c
 +	return false;
 +}
 +
-+static inline void bhv_integrity_mm_init(void)
-+{
-+}
-+
 +static inline int bhv_integrity_freeze_events(uint64_t)
 +{
 +	return 0;
@@ -7271,10 +7674,10 @@ index 000000000..d6d60fbfd
 +#endif /* __BHV_INTERFACE_ACL_H__ */
 diff --git include/bhv/interface/common.h include/bhv/interface/common.h
 new file mode 100644
-index 000000000..a0dc4da99
+index 000000000..06ed342ef
 --- /dev/null
 +++ include/bhv/interface/common.h
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,65 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -7320,6 +7723,7 @@ index 000000000..a0dc4da99
 +#define BHV_VAS_BACKEND_REGISTER_PROTECTION 9
 +#define BHV_VAS_BACKEND_DOMAIN 10
 +#define BHV_VAS_BACKEND_INODE 11
++#define BHV_VAS_BACKEND_KEYRING 12
 +
 +/* BHV CONFIGURATION BITS */
 +#define BHV_CONFIG_INTEGRITY 0
@@ -7333,6 +7737,7 @@ index 000000000..a0dc4da99
 +#define BHV_CONFIG_STRONG_ISOLATION 8
 +#define BHV_CONFIG_INTEGRITY_PT_PROT 9
 +#define BHV_CONFIG_INODE 10
++#define BHV_CONFIG_KEYRING 11
 +
 +/* Common Defines */
 +#define BHV_INVALID_PHYS_ADDR (~0ULL)
@@ -7851,10 +8256,10 @@ index 000000000..2ccc93a81
 \ No newline at end of file
 diff --git include/bhv/interface/hypercall.h include/bhv/interface/hypercall.h
 new file mode 100644
-index 000000000..396a988b8
+index 000000000..a9fab6e50
 --- /dev/null
 +++ include/bhv/interface/hypercall.h
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,139 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -7874,6 +8279,8 @@ index 000000000..396a988b8
 +#include <bhv/interface/common.h>
 +#include <bhv/interface/patch.h>
 +
++#include <bhv/bhv_trace.h>
++
 +static __always_inline int bhv_hypercall_vas(uint32_t backend, uint32_t op,
 +					     void *arg)
 +{
@@ -7883,8 +8290,14 @@ index 000000000..396a988b8
 +	if (arg != NULL)
 +		phys_addr = bhv_virt_to_phys(arg);
 +
++#ifdef CONFIG_BHV_TRACEPOINTS
++	trace_bhv_hypercall_start(TARGET_BHV_VAS, backend, op);
++#endif
 +	rv = BHV_HYPERCALL(TARGET_BHV_VAS, backend, op, BHV_VAS_ABI_VERSION,
 +			   phys_addr);
++#ifdef CONFIG_BHV_TRACEPOINTS
++	trace_bhv_hypercall_end(TARGET_BHV_VAS, backend, op);
++#endif
 +
 +	if (rv) {
 +#ifdef CONFIG_BHV_PANIC_ON_FAIL
@@ -8120,7 +8533,7 @@ index 000000000..6a4943184
 +#endif /* __BHV_INTERFACE_INODE_H__ */
 diff --git include/bhv/interface/integrity.h include/bhv/interface/integrity.h
 new file mode 100644
-index 000000000..7f7a67bb7
+index 000000000..182e5e22a
 --- /dev/null
 +++ include/bhv/interface/integrity.h
 @@ -0,0 +1,122 @@
@@ -8142,8 +8555,8 @@ index 000000000..7f7a67bb7
 +#define BHV_MEM_TYPE_CODE_PATCHABLE		3U
 +#define BHV_MEM_TYPE_DATA			4U
 +#define BHV_MEM_TYPE_DATA_READ_ONLY		5U
-+#define BHV_MEM_TYPE_VDSO 6U
-+#define BHV_MEM_TYPE_VVAR 7U
++#define BHV_MEM_TYPE_VDSO			6U
++#define BHV_MEM_TYPE_VVAR			7U
 +
 +#define BHV_MEM_FLAGS_NONE			0UL
 +#define BHV_MEM_FLAGS_TRANSIENT		(1UL << 0)
@@ -8246,6 +8659,69 @@ index 000000000..7f7a67bb7
 +#define BHV_FREEZE_FLAGS_MAX (1UL << 4)
 +
 +#endif /* __BHV_INTERFACE_INTEGRITY_H__ */
+diff --git include/bhv/interface/keyring.h include/bhv/interface/keyring.h
+new file mode 100644
+index 000000000..7b72b04c2
+--- /dev/null
++++ include/bhv/interface/keyring.h
+@@ -0,0 +1,57 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2023 - BedRock Systems Inc
++ * Authors: Sergej Proskurin <sergej@bedrocksystems.com>
++ */
++
++#ifndef __BHV_INTERFACE_KEYRING_H__
++#define __BHV_INTERFACE_KEYRING_H__
++
++#include <linux/types.h>
++
++#include <bhv/event.h>
++
++/* BHV VAS KEYRING BACKEND OPS */
++#define BHV_VAS_KEYRING_OP_REGISTER 0U
++#define BHV_VAS_KEYRING_OP_RELEASE 1U
++#define BHV_VAS_KEYRING_OP_VERIFY 2U
++#define BHV_VAS_KEYRING_OP_LOG 3U
++
++enum event_type { EVENT_NONE = 0, NO_KEYRING, CORRUPTION, MAX_EVENTS };
++
++typedef struct {
++	uint64_t addr;
++	uint64_t hmac;
++} __attribute__((__packed__)) bhv_keyring_t;
++
++typedef struct {
++	bhv_keyring_t keyring;
++	uint8_t block;
++} __attribute__((__packed__)) bhv_keyring_register_arg_t;
++
++typedef struct {
++	bhv_keyring_t keyring;
++	uint8_t ret;
++} __attribute__((__packed__)) bhv_keyring_verify_arg_t;
++
++typedef struct {
++        bhv_event_context_t context;
++        uint64_t addr;
++        uint32_t uid;
++        uint32_t gid;
++	uint32_t perm;
++	uint32_t serial;
++        uint8_t event_type;
++	uint8_t block;
++	char desc[EVENT_MAX_PATH_SZ];
++} __attribute__((__packed__)) bhv_keyring_log_arg_t;
++
++typedef struct {
++	union {
++		bhv_keyring_register_arg_t keyring_register;
++		bhv_keyring_verify_arg_t keyring_verify;
++		bhv_keyring_log_arg_t keyring_log;
++	};
++} __attribute__((__packed__)) bhv_keyring_arg_t;
++
++#endif /* __BHV_INTERFACE_KEYRING_H__ */
 diff --git include/bhv/interface/patch.h include/bhv/interface/patch.h
 new file mode 100644
 index 000000000..6ce09b6f3
@@ -8399,6 +8875,53 @@ index 000000000..89729b2c6
 +#define KLN_SYM(sym) ((unsigned long) sym)
 +#define KLN_SYMBOL(ty, sym) ((ty)sym)
 +#define KLN_SYMBOL_P(ty, sym) ((ty)&sym)
+diff --git include/bhv/keyring.h include/bhv/keyring.h
+new file mode 100644
+index 000000000..3b21352ba
+--- /dev/null
++++ include/bhv/keyring.h
+@@ -0,0 +1,41 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2023 - BedRock Systems Inc
++ * Authors: Sergej Proskurin <sergej@bedrocksystems.com>
++ */
++
++#ifndef __BHV_KEYRING_H__
++#define __BHV_KEYRING_H__
++
++#include <bhv/bhv.h>
++#include <bhv/interface/common.h>
++#include <bhv/interface/init.h>
++
++#ifdef CONFIG_KEYS
++#ifdef CONFIG_BHV_VAS
++
++static inline bool bhv_keyring_is_enabled(void)
++{
++	if (!is_bhv_initialized())
++		return false;
++
++	return !!test_bit(BHV_CONFIG_KEYRING, bhv_configuration_bitmap);
++}
++
++int __init bhv_init_keyring(void);
++
++int bhv_keyring_register_system_trusted(struct key **k);
++int bhv_keyring_verify(struct key *keyring, void *anchor);
++int bhv_keyring_verify_locked(struct key *keyring, void *anchor);
++
++#else /* CONFIG_BHV_VAS */
++
++#define bhv_keyring_register_system_trusted(k) 0
++#define bhv_keyring_verify(k, a) 0
++#define bhv_keyring_verify_locked(k, a) 0
++
++#endif /* CONFIG_BHV_VAS */
++#endif /* CONFIG_KEYS */
++
++#endif /* __BHV_KEYRING_H__ */
++
 diff --git include/bhv/kversion.h include/bhv/kversion.h
 new file mode 100644
 index 000000000..4aae1b3f3
@@ -8527,10 +9050,10 @@ index 000000000..b5d14513b
 +#endif /* __BHV_MODULE_H__ */
 diff --git include/bhv/patch.h include/bhv/patch.h
 new file mode 100644
-index 000000000..aba8b81d7
+index 000000000..209fded75
 --- /dev/null
 +++ include/bhv/patch.h
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,130 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -8556,6 +9079,14 @@ index 000000000..aba8b81d7
 +
 +#ifdef CONFIG_BHV_VAS
 +
++extern struct mutex bhv_alternatives_mutex;
++
++/**************************************************
++ * start
++ **************************************************/
++void bhv_start_delete_alternatives(void);
++/**************************************************/
++
 +#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0) || \
 +	defined(VASKM_HAVE_BPF_PACK)
 +int bhv_bpf_write(void *dst, void *src, size_t sz);
@@ -8571,8 +9102,6 @@ index 000000000..aba8b81d7
 +int bhv_jump_label_add_module(struct module *mod);
 +void bhv_jump_label_del_module(struct module *mod);
 +#endif /* CONFIG_JUMP_LABEL */
-+
-+extern struct mutex bhv_alternatives_mutex;
 +
 +static void __always_inline bhv_alternatives_lock(void)
 +{
@@ -8607,7 +9136,6 @@ index 000000000..aba8b81d7
 +					 bhv_alternatives_filter_t filter);
 +void bhv_alternatives_add_module(struct alt_instr *begin, struct alt_instr *end,
 +				 struct bhv_alternatives_mod_arch *arch);
-+void bhv_alternatives_delete_after_init(void);
 +
 +#ifndef VASKM // inside kernel tree
 +// CONFIG_STACK_VALIDATION is used in 5.15 and CONFIG_OBJTOOL in 6.1
@@ -8622,6 +9150,10 @@ index 000000000..aba8b81d7
 +#if defined CONFIG_PARAVIRT && defined CONFIG_X86
 +void __init_or_module bhv_apply_paravirt(struct paravirt_patch_site *p);
 +#endif /* defined CONFIG_PARAVIRT && defined CONFIG_X86 */
++
++#ifdef CONFIG_X86_KERNEL_IBT
++void __init_or_module bhv_apply_ibt_endbr(s32 *s);
++#endif
 +#endif // VASKM
 +
 +#else // CONFIG_BHV_VAS
@@ -8652,68 +9184,29 @@ index 000000000..aba8b81d7
 +#endif // CONFIG_BHV_VAS
 +
 +#endif /* __BHV_PATCH_H__ */
-diff --git include/bhv/start.h include/bhv/start.h
-new file mode 100644
-index 000000000..cbeec4fee
---- /dev/null
-+++ include/bhv/start.h
-@@ -0,0 +1,35 @@
-+// SPDX-License-Identifier: GPL-2.0-only
-+/*
-+ * Copyright (C) 2022 - BedRock Systems Inc
-+ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
-+ */
-+
-+#ifndef __BHV_START_H__
-+#define __BHV_START_H__
-+
-+#include <bhv/bhv.h>
-+
-+#ifdef CONFIG_BHV_VAS
-+bool __init bhv_init_platform(void);
-+bool bhv_start(void);
-+void bhv_late_start(void);
-+int bhv_start_arch(void);
-+#else /* CONFIG_BHV_VAS */
-+static inline bool bhv_init_platform(void)
-+{
-+	return true;
-+}
-+static inline bool bhv_start(void)
-+{
-+	return true;
-+}
-+static inline void bhv_late_start(void)
-+{
-+}
-+static inline int bhv_start_arch(void)
-+{
-+	return 0;
-+}
-+#endif /* CONFIG_BHV_VAS */
-+
-+#endif /* __BHV_START_H__ */
-\ No newline at end of file
 diff --git include/bhv/sysfs.h include/bhv/sysfs.h
 new file mode 100644
-index 000000000..e44778cad
+index 000000000..100139430
 --- /dev/null
 +++ include/bhv/sysfs.h
-@@ -0,0 +1,7 @@
+@@ -0,0 +1,11 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
 + * Authors: Tommaso Frassetto <tommaso.frassetto@bedrocksystems.com>
 + */
 +
-+void bhv_setup_sysfs(void);
-\ No newline at end of file
++/**********************************************************
++ * start
++ **********************************************************/
++void bhv_start_sysfs(void);
++/**********************************************************/
 diff --git include/bhv/sysfs_fops.h include/bhv/sysfs_fops.h
 new file mode 100644
-index 000000000..7175b3428
+index 000000000..6703abb71
 --- /dev/null
 +++ include/bhv/sysfs_fops.h
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,26 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -8725,8 +9218,12 @@ index 000000000..7175b3428
 +#include <bhv/interface/common.h>
 +
 +#ifdef CONFIG_BHV_VAS
-+void bhv_setup_sysfs_fileops_protection(struct kobject *fops,
++/***************************************************
++ * start
++ ***************************************************/
++void bhv_start_sysfs_fileops_protection(struct kobject *fops,
 +					struct kobject *status);
++/***************************************************/
 +
 +#ifdef VASKM // out of tree
 +int bhv_freeze_fops_map(void);
@@ -8738,10 +9235,10 @@ index 000000000..7175b3428
 +
 diff --git include/bhv/sysfs_integrity_freeze.h include/bhv/sysfs_integrity_freeze.h
 new file mode 100644
-index 000000000..159489d15
+index 000000000..e60e0f070
 --- /dev/null
 +++ include/bhv/sysfs_integrity_freeze.h
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,16 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -8750,17 +9247,21 @@ index 000000000..159489d15
 +
 +#pragma once
 +
-+void bhv_setup_sysfs_integrity_freeze(struct kobject *kobj);
++/***************************************************
++ * start
++ ***************************************************/
++void bhv_start_sysfs_integrity_freeze(struct kobject *kobj);
++/***************************************************/
 +
 +extern bool bhv_allow_kmod_loads;
 +extern bool bhv_allow_patch;
 \ No newline at end of file
 diff --git include/bhv/sysfs_reg_protect.h include/bhv/sysfs_reg_protect.h
 new file mode 100644
-index 000000000..0fa375ce9
+index 000000000..adc18c413
 --- /dev/null
 +++ include/bhv/sysfs_reg_protect.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,34 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -8772,7 +9273,11 @@ index 000000000..0fa375ce9
 +#include <bhv/interface/common.h>
 +
 +#ifdef CONFIG_BHV_VAS
-+void bhv_setup_sysfs_reg_protect(struct kobject *kobj);
++/***************************************************
++ * start
++ ***************************************************/
++void bhv_start_sysfs_reg_protect(struct kobject *kobj);
++/***************************************************/
 +
 +static inline bool bhv_reg_protect_is_enabled(void)
 +{
@@ -8793,10 +9298,10 @@ index 000000000..0fa375ce9
 +#endif /* CONFIG_BHV_VAS */
 diff --git include/bhv/sysfs_version.h include/bhv/sysfs_version.h
 new file mode 100644
-index 000000000..4197e5d6d
+index 000000000..5a9f9c87d
 --- /dev/null
 +++ include/bhv/sysfs_version.h
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,16 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -8807,7 +9312,11 @@ index 000000000..4197e5d6d
 +
 +
 +#ifdef CONFIG_BHV_VAS
-+void bhv_setup_sysfs_version(struct kobject *kobj);
++/***************************************************
++ * start
++ ***************************************************/
++void bhv_start_sysfs_version(struct kobject *kobj);
++/***************************************************/
 +#endif /* CONFIG_BHV_VAS */
 diff --git include/bhv/vault.h include/bhv/vault.h
 new file mode 100644
@@ -8860,7 +9369,7 @@ index 000000000..902647976
 +#endif /* __BHV_VAULT_H__ */
 diff --git include/bhv/version.h include/bhv/version.h
 new file mode 100644
-index 000000000..581d75b4b
+index 000000000..7afe7fcd2
 --- /dev/null
 +++ include/bhv/version.h
 @@ -0,0 +1,13 @@
@@ -8873,10 +9382,24 @@ index 000000000..581d75b4b
 +#ifndef __BHV_VERSION_H__
 +#define __BHV_VERSION_H__
 +
-+#define BHV_VERSION __BHV_VERSION(23, 52, 0)
-+#define BHV_VAS_ABI_VERSION __BHV_VAS_ABI_VERSION(0x23, 0x52, 0, 274)
++#define BHV_VERSION __BHV_VERSION(24, 8, 0)
++#define BHV_VAS_ABI_VERSION __BHV_VAS_ABI_VERSION(0x24, 0x08, 0, 137)
 +
 +#endif //__BHV_VERSION_H__
+diff --git include/keys/system_keyring.h include/keys/system_keyring.h
+index 875e002a4..5e57cbb29 100644
+--- include/keys/system_keyring.h
++++ include/keys/system_keyring.h
+@@ -69,6 +69,9 @@ extern struct key *ima_blacklist_keyring;
+ 
+ static inline struct key *get_ima_blacklist_keyring(void)
+ {
++	if (bhv_keyring_verify(ima_blacklist_keyring, &ima_blacklist_keyring))
++		return NULL;
++
+ 	return ima_blacklist_keyring;
+ }
+ #else
 diff --git include/linux/filter.h include/linux/filter.h
 index bc6ce4b20..aa801e659 100644
 --- include/linux/filter.h
@@ -8969,7 +9492,7 @@ index 68f69362d..a54d81bee 100644
   * usually useless though. */
  extern __printf(2, 3)
 diff --git include/linux/lsm_hook_defs.h include/linux/lsm_hook_defs.h
-index d13631a5e..f09247bc2 100644
+index 693ed9c61..286c6e3b6 100644
 --- include/linux/lsm_hook_defs.h
 +++ include/linux/lsm_hook_defs.h
 @@ -393,3 +393,5 @@ LSM_HOOK(void, LSM_RET_VOID, perf_event_free, struct perf_event *event)
@@ -9205,15 +9728,15 @@ index 3bac0a8ce..94224cf51 100644
  
  #ifndef __ASSEMBLY__
 diff --git init/main.c init/main.c
-index 298989b0d..9d5ed63cb 100644
+index 298989b0d..f743fa235 100644
 --- init/main.c
 +++ init/main.c
 @@ -108,6 +108,10 @@
  
  #include <kunit/test.h>
  
-+#include <bhv/bhv.h>
-+#include <bhv/start.h>
++#include <bhv/init/mm_init.h>
++#include <bhv/init/late_start.h>
 +#include <bhv/memory_freeze.h>
 +
  static int kernel_init(void *);
@@ -9298,10 +9821,10 @@ index ac283f9b2..4afe69e3c 100644
  
  reset_unlock:
 diff --git kernel/bpf/core.c kernel/bpf/core.c
-index d3f6a0708..90a87eb7b 100644
+index 33ea6ab12..f4d66f493 100644
 --- kernel/bpf/core.c
 +++ kernel/bpf/core.c
-@@ -904,6 +904,12 @@ void bpf_jit_binary_free(struct bpf_binary_header *hdr)
+@@ -908,6 +908,12 @@ void bpf_jit_binary_free(struct bpf_binary_header *hdr)
  {
  	u32 pages = hdr->pages;
  
@@ -9404,10 +9927,10 @@ index 09f58853f..0c0f096c7 100644
  		ti_work = exit_to_user_mode_loop(regs, ti_work);
  
 diff --git kernel/events/core.c kernel/events/core.c
-index 8c5400fd2..b8bb70036 100644
+index 5072635f0..75f9a873d 100644
 --- kernel/events/core.c
 +++ kernel/events/core.c
-@@ -7943,6 +7943,10 @@ void perf_event_namespaces(struct task_struct *task)
+@@ -7969,6 +7969,10 @@ void perf_event_namespaces(struct task_struct *task)
  	perf_fill_ns_link_info(&ns_link_info[CGROUP_NS_INDEX],
  			       task, &cgroupns_operations);
  #endif
@@ -10193,10 +10716,10 @@ index 17a310dcb..3a0903031 100644
  	.read = devkmsg_read,
  	.write_iter = devkmsg_write,
 diff --git kernel/reboot.c kernel/reboot.c
-index af6f23d8b..78717a847 100644
+index e297b35fc..993b1b736 100644
 --- kernel/reboot.c
 +++ kernel/reboot.c
-@@ -416,8 +416,14 @@ void ctrl_alt_del(void)
+@@ -417,8 +417,14 @@ void ctrl_alt_del(void)
  		kill_cad_pid(SIGINT, 1);
  }
  
@@ -10332,7 +10855,7 @@ index 3f646613a..50a705e54 100644
  			       (const char *const *)sub_info->argv,
  			       (const char *const *)sub_info->envp);
 diff --git lib/Kconfig.debug lib/Kconfig.debug
-index 19c28a34c..962966ed8 100644
+index 24ca61cf8..294e518b8 100644
 --- lib/Kconfig.debug
 +++ lib/Kconfig.debug
 @@ -527,6 +527,7 @@ endmenu
@@ -10770,7 +11293,7 @@ index a22c3fb88..e888dbdc2 100644
  	  Berkeley Packet Filter filtering capabilities are normally handled
  	  by an interpreter. This option allows kernel to generate a native
 diff --git net/socket.c net/socket.c
-index 1a4033511..d4d560cae 100644
+index 36e38ee43..0bd56e35f 100644
 --- net/socket.c
 +++ net/socket.c
 @@ -146,7 +146,7 @@ static void sock_show_fdinfo(struct seq_file *m, struct file *f)
@@ -10849,10 +11372,10 @@ index 3baf435de..aa60209b2 100644
  obj-$(CONFIG_CGROUPS)			+= device_cgroup.o
 diff --git security/bhv/Kconfig security/bhv/Kconfig
 new file mode 100644
-index 000000000..43b6adc0e
+index 000000000..f91b6f7c7
 --- /dev/null
 +++ security/bhv/Kconfig
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,94 @@
 +config BHV_VAS
 +	bool "BHV guest support and VAS LSM"
 +	default y
@@ -10883,6 +11406,13 @@ index 000000000..43b6adc0e
 +	depends on BHV_VAS
 +	help
 +	  Say Y if you want to include DEBUG output when using BHV VAS.
++
++config BHV_TRACEPOINTS
++	bool "Enable BHV Tracepoints"
++	default n
++	depends on BHV_VAS_DEBUG && TRACEPOINTS
++	help
++	  Say Y if you want to enable BHV tracepoints. Note: do not enable this option in production systems.
 +
 +config BHV_ALLOW_SELINUX_GUEST_ADMIN
 +	bool "Allow the guest to perform SELinux administration if the host disabled guestpolicy support"
@@ -10942,10 +11472,10 @@ index 000000000..43b6adc0e
 +
 diff --git security/bhv/Makefile security/bhv/Makefile
 new file mode 100644
-index 000000000..83542f5e0
+index 000000000..0a562dd01
 --- /dev/null
 +++ security/bhv/Makefile
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,43 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +
 +# Copyright (C) 2022 - BedRock Systems Inc
@@ -10954,11 +11484,13 @@ index 000000000..83542f5e0
 +#          Sebastian Vogl <sebastian@bedrocksystems.com>
 +#          Tommaso Frassetto <tommaso@bedrocksystems.com>
 +
-+ccflags-y+=-DKERNEL_COMMIT_HASH=\"85721d18805037e0a0c471c4b6736e9320b8a8a7+6c33b81a8c2f55970245be759ad81eca134af7b6\"
++ccflags-y+=-DKERNEL_COMMIT_HASH=\"3210f35f038120550e8a9b37b2479bf7a8da8a1c+8ccb8dcd2d2696d64ca1a10cdcdfcc1ce3bdd7e5\"
 +
 +obj-$(CONFIG_BHV_VAS)		:= bhv.o
-+obj-$(CONFIG_BHV_VAS)		+= start.o
-+obj-$(CONFIG_BHV_VAS)		+= init.o
++obj-$(CONFIG_BHV_VAS)		+= init/init.o
++obj-$(CONFIG_BHV_VAS)		+= init/start.o
++obj-$(CONFIG_BHV_VAS)		+= init/mm_init.o
++obj-$(CONFIG_BHV_VAS)		+= init/late_start.o
 +obj-$(CONFIG_BHV_VAS)		+= integrity.o
 +ifeq ($(CONFIG_JUMP_LABEL),y)
 +obj-$(CONFIG_BHV_VAS)		+= patch_jump_label.o
@@ -10984,12 +11516,15 @@ index 000000000..83542f5e0
 +obj-$(CONFIG_BHV_VAS)		+= memory_freeze.o
 +endif
 +obj-$(CONFIG_BHV_VAS)		+= inode.o
++ifeq ($(CONFIG_KEYS),y)
++obj-$(CONFIG_BHV_VAS)		+= keyring.o
++endif
 diff --git security/bhv/acl.c security/bhv/acl.c
 new file mode 100644
-index 000000000..8706769d4
+index 000000000..4d3d40e6b
 --- /dev/null
 +++ security/bhv/acl.c
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,310 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -11023,7 +11558,11 @@ index 000000000..8706769d4
 +
 +struct kmem_cache *bhv_acl_violation_cache;
 +
-+static void __init bhv_acl_init_acl(uint32_t op, bhv_acl_config_t **global_acl_config)
++/************************************************************
++ * mm_init
++ ************************************************************/
++static void __init bhv_mm_init_acl_init(uint32_t op,
++					bhv_acl_config_t **global_acl_config)
 +{
 +	unsigned long r;
 +	bhv_acl_config_t *acl_config;
@@ -11092,15 +11631,16 @@ index 000000000..8706769d4
 +	*global_acl_config = acl_config;
 +}
 +
-+void __init bhv_acl_mm_init(void)
++void __init bhv_mm_init_acl(void)
 +{
 +	if (bhv_acl_is_proc_acl_enabled())
-+		bhv_acl_init_acl(BHV_VAS_ACL_OP_INIT_PROC_ACL,
-+				 &process_acl_config);
++		bhv_mm_init_acl_init(BHV_VAS_ACL_OP_INIT_PROC_ACL,
++				     &process_acl_config);
 +	if (bhv_acl_is_driver_acl_enabled())
-+		bhv_acl_init_acl(BHV_VAS_ACL_OP_INIT_DRIVER_ACL,
-+				 &driver_acl_config);
++		bhv_mm_init_acl_init(BHV_VAS_ACL_OP_INIT_DRIVER_ACL,
++				     &driver_acl_config);
 +}
++/************************************************************/
 +
 +static size_t _get_ext_len(const char *str)
 +{
@@ -11298,48 +11838,31 @@ index 000000000..8706769d4
 \ No newline at end of file
 diff --git security/bhv/bhv.c security/bhv/bhv.c
 new file mode 100644
-index 000000000..b021fc30b
+index 000000000..a37a5640f
 --- /dev/null
 +++ security/bhv/bhv.c
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,15 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
 + * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
 + */
 +
-+#include <bhv/creds.h>
-+#include <bhv/integrity.h>
-+#include <bhv/guestconn.h>
-+#include <bhv/file_protection.h>
-+
 +#include <bhv/bhv.h>
-+#include <bhv/fileops_protection.h>
 +
-+#ifndef VASKM // inside kernel tree
-+#include <bhv/acl.h>
-+#endif // VASKM
++#ifdef CONFIG_BHV_TRACEPOINTS
++#define CREATE_TRACE_POINTS
++#endif
++#include <bhv/bhv_trace.h>
 +
 +bool bhv_initialized __ro_after_init = false;
 +unsigned long *bhv_configuration_bitmap __ro_after_init = NULL;
-+
-+void __init bhv_mm_init(void)
-+{
-+	bhv_integrity_mm_init();
-+#ifndef VASKM // inside kernel tree
-+	bhv_acl_mm_init();
-+#endif // VASKM
-+	bhv_guestconn_mm_init();
-+	bhv_cred_mm_init();
-+	bhv_file_protection_init();
-+	bhv_fileops_protection_mm_init();
-+}
 diff --git security/bhv/creds.c security/bhv/creds.c
 new file mode 100644
-index 000000000..bd6c73c7c
+index 000000000..d08bce7db
 --- /dev/null
 +++ security/bhv/creds.c
-@@ -0,0 +1,479 @@
+@@ -0,0 +1,501 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -11360,6 +11883,7 @@ index 000000000..bd6c73c7c
 +#include <bhv/interface/common.h>
 +#include <bhv/interface/creds.h>
 +#include <bhv/interface/hypercall.h>
++#include <bhv/keyring.h>
 +
 +#ifndef VASKM // inside kernel tree
 +#include <bhv/kernel-kln.h>
@@ -11381,6 +11905,11 @@ index 000000000..bd6c73c7c
 +#define BHV_CREDS_VERIFY_HYP(arg)                                              \
 +	BHV_CREDS_HYP(BHV_VAS_CREDS_OP_VERIFICATION, arg)
 +#define BHV_CREDS_LOG_HYP(arg) BHV_CREDS_HYP(BHV_VAS_CREDS_OP_LOG, arg)
++
++#define BHV_CRED_USAGE_SET(arg1, arg2)                                         \
++	_Generic((arg1),                                                       \
++		atomic_t *: atomic_set,                                        \
++		atomic_long_t *: atomic_long_set)(arg1, arg2)
 +
 +struct kmem_cache *bhv_creds_arg_cache = NULL;
 +
@@ -11404,7 +11933,7 @@ index 000000000..bd6c73c7c
 +
 +	/* Exclude mutable fields from the credentials to be hashed. */
 +
-+	atomic_set(&cred_copy.usage, 0);
++	BHV_CRED_USAGE_SET(&cred_copy.usage, 0);
 +#ifdef CONFIG_DEBUG_CREDENTIALS
 +	atomic_set(&cred_copy.subscribers, 0);
 +	cred_copy.put_addr = NULL;
@@ -11768,7 +12297,10 @@ index 000000000..bd6c73c7c
 +	kmem_cache_free(bhv_creds_arg_cache, arg);
 +}
 +
-+void __init bhv_cred_mm_init(void)
++/***********************************************************************
++ * mm_init
++ ***********************************************************************/
++void __init bhv_mm_init_cred(void)
 +{
 +	if (!bhv_cred_is_enabled())
 +		return;
@@ -11779,8 +12311,12 @@ index 000000000..bd6c73c7c
 +	bhv_cred_register_init_task(KLN_SYMBOL_P(struct cred *const, init_cred),
 +				    &init_task);
 +}
++/***********************************************************************/
 +
-+int __init bhv_cred_init(void)
++/***********************************************************************
++ * init
++ ***********************************************************************/
++int __init bhv_init_cred(void)
 +{
 +	int rc = 0;
 +
@@ -11794,9 +12330,8 @@ index 000000000..bd6c73c7c
 +	 * so that we do not miss the instantiation of new credentials.
 +	 */
 +	rc = BHV_CREDS_CONFIGURE_HYP(&bhv_siphash_key);
-+	if (rc) {
++	if (rc)
 +		return -EINVAL;
-+	}
 +
 +#else // out of tree
 +	siphash_key_t *bhv_siphash_key_ptr =
@@ -11812,13 +12347,23 @@ index 000000000..bd6c73c7c
 +		return -EINVAL;
 +	}
 +
-+	bhv_siphash_key = *bhv_siphash_key_ptr;
++	memcpy(&bhv_siphash_key, bhv_siphash_key_ptr, sizeof(siphash_key_t));
++	memset(bhv_siphash_key_ptr, 0, sizeof(siphash_key_t));
 +	kfree(bhv_siphash_key_ptr);
 +#endif // VASKM
 +
-+	return bhv_inode_init();
-+}
++	rc = bhv_inode_init();
++	if (rc)
++		return rc;
++#ifndef VASKM
++	rc = bhv_init_keyring();
++	if (rc)
++		return rc;
++#endif
 +
++	return rc;
++}
++/***********************************************************************/
 diff --git security/bhv/domain.c security/bhv/domain.c
 new file mode 100644
 index 000000000..f0fe388b3
@@ -12734,10 +13279,10 @@ index 000000000..f0fe388b3
 +#endif /* CONFIG_MEM_NS */
 diff --git security/bhv/file_protection.c security/bhv/file_protection.c
 new file mode 100644
-index 000000000..816545717
+index 000000000..136e72b73
 --- /dev/null
 +++ security/bhv/file_protection.c
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,131 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -12765,7 +13310,11 @@ index 000000000..816545717
 +bhv_file_protection_config_t bhv_file_protection_config __ro_after_init = { 0 };
 +
 +struct kmem_cache *bhv_file_protection_violation_cache;
-+void __init bhv_file_protection_init(void)
++
++/***********************************************************************
++ * mm_init
++ ***********************************************************************/
++void __init bhv_mm_init_file_protection(void)
 +{
 +	unsigned long r;
 +
@@ -12814,6 +13363,7 @@ index 000000000..816545717
 +	kfree(bhv_file_protection_config_tmp_ptr);
 +#endif // VASKM
 +}
++/***********************************************************************/
 +
 +bool bhv_block_read_only_file_write(const char *target, bool dirtycred)
 +{
@@ -12867,10 +13417,10 @@ index 000000000..816545717
 \ No newline at end of file
 diff --git security/bhv/fileops_protection.c security/bhv/fileops_protection.c
 new file mode 100644
-index 000000000..4f9063b80
+index 000000000..4376b1e60
 --- /dev/null
 +++ security/bhv/fileops_protection.c
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,273 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -12914,7 +13464,10 @@ index 000000000..4f9063b80
 +
 +struct kmem_cache *bhv_fileops_protection_violation_cache;
 +
-+void __init bhv_fileops_protection_mm_init(void)
++/***********************************************************************
++ * mm_init
++ ***********************************************************************/
++void __init bhv_mm_init_fileops_protection(void)
 +{
 +	if (!bhv_fileops_file_protection_is_enabled())
 +		return;
@@ -12929,6 +13482,7 @@ index 000000000..4f9063b80
 +		return;
 +	}
 +}
++/***********************************************************************/
 +
 +u8 bhv_fileops_type(u32 fs_magic)
 +{
@@ -12962,6 +13516,27 @@ index 000000000..4f9063b80
 +	return op;
 +}
 +
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
++static inline bool _is_module_ro_data(unsigned long addr, struct module *mod)
++{
++	return mod && ((unsigned long)mod->mem[MOD_RODATA].base <= addr) &&
++	       ((unsigned long)mod->mem[MOD_RODATA].base +
++			mod->mem[MOD_RODATA].size >
++		addr);
++}
++#else
++static inline bool _is_module_ro_data(unsigned long addr, struct module *mod)
++{
++	return mod &&
++	       ((unsigned long)mod->core_layout.base +
++			mod->core_layout.text_size <=
++		addr) &&
++	       ((unsigned long)mod->core_layout.base +
++			mod->core_layout.ro_size >
++		addr);
++}
++#endif
++
 +bool bhv_fileops_is_ro(u64 f_op)
 +{
 +	struct module *mod;
@@ -12974,10 +13549,8 @@ index 000000000..4f9063b80
 +	if (mod == NULL)
 +		return false;
 +
-+	if (f_op >= (u64)mod->core_layout.base + mod->core_layout.text_size &&
-+	    f_op < (u64)mod->core_layout.base + mod->core_layout.ro_size) {
++	if (_is_module_ro_data(f_op, mod))
 +		return true;
-+	}
 +
 +	return false;
 +}
@@ -13004,6 +13577,7 @@ index 000000000..4f9063b80
 +	rv = populate_event_context(&violation->context, true);
 +	if (rv) {
 +		bhv_fail("%s: BHV cannot retrieve event context", __FUNCTION__);
++		kmem_cache_free(bhv_fileops_protection_violation_cache, violation);
 +		return true;
 +	}
 +
@@ -13076,11 +13650,11 @@ index 000000000..4f9063b80
 +	BUG_ON(!PAGE_ALIGNED(fileops_map));
 +
 +#define KFOPS(sym) KLN_SYMBOL_P(const struct file_operations *, sym)
-+#define FOPS_MAP(_, idx, file_ops, dir_ops)    \
-+	fileops_map[idx][0] = KFOPS(file_ops); \
++#define FOPS_MAP(_, idx, file_ops, dir_ops)                                    \
++	fileops_map[idx][0] = KFOPS(file_ops);                                 \
 +	fileops_map[idx][1] = KFOPS(dir_ops);
-+#define FOPS_MAP_DIRNULL(_, idx, file_ops)     \
-+	fileops_map[idx][0] = KFOPS(file_ops); \
++#define FOPS_MAP_DIRNULL(_, idx, file_ops)                                     \
++	fileops_map[idx][0] = KFOPS(file_ops);                                 \
 +	fileops_map[idx][1] = NULL;
 +#include <bhv/fileops_internal_fopsmap.h>
 +
@@ -13099,7 +13673,10 @@ index 000000000..4f9063b80
 +	return ((a == b) ? 0 : (a > b ? 1 : -1));
 +}
 +
-+void __init bhv_fileops_init(void)
++/***************************************************************
++ * init
++ ***************************************************************/
++void __init bhv_init_fileops(void)
 +{
 +	init_fileops_data();
 +	if (bhv_file_protection_is_enabled()) {
@@ -13107,6 +13684,7 @@ index 000000000..4f9063b80
 +		     cmp_fileops, NULL);
 +	}
 +}
++/***************************************************************/
 +
 +bool is_valid_proc_fop(const struct file_operations **fop_ptr)
 +{
@@ -13118,10 +13696,10 @@ index 000000000..4f9063b80
 +}
 diff --git security/bhv/guestconn.c security/bhv/guestconn.c
 new file mode 100644
-index 000000000..b7c26fdd2
+index 000000000..0c0b690b9
 --- /dev/null
 +++ security/bhv/guestconn.c
-@@ -0,0 +1,263 @@
+@@ -0,0 +1,275 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -13310,7 +13888,10 @@ index 000000000..b7c26fdd2
 +	.priority = 0,
 +};
 +
-+void bhv_guestconn_start(void)
++/**********************************************************
++ * start
++ **********************************************************/
++void bhv_start_guestconn(void)
 +{
 +	int err;
 +	struct sockaddr_vm addr;
@@ -13321,7 +13902,7 @@ index 000000000..b7c26fdd2
 +	BUG_ON(bhv_guestconn_cid == 0 && bhv_guestconn_port == 0);
 +
 +	vsock_addr_init(&addr, bhv_guestconn_cid, bhv_guestconn_port);
-+	pr_info("bhv_guestconn_started with cid %u, port %u", bhv_guestconn_cid,
++	pr_info("bhv guestconn started with cid %u, port %u", bhv_guestconn_cid,
 +		bhv_guestconn_port);
 +#ifdef VASKM // out of tree
 +	bhv_guestconn_configured = true;
@@ -13358,8 +13939,12 @@ index 000000000..b7c26fdd2
 +
 +	queue_work(bhv_guestconn_workqueue, &bhv_guestconn_work_struct);
 +}
++/**********************************************************/
 +
-+void __init bhv_guestconn_mm_init(void)
++/**********************************************************
++ * mm_init
++ **********************************************************/
++void __init bhv_mm_init_guestconn(void)
 +{
 +	if (!is_bhv_initialized())
 +		return;
@@ -13376,8 +13961,12 @@ index 000000000..b7c26fdd2
 +		return;
 +	}
 +}
++/**********************************************************/
 +
-+int __init bhv_guestconn_init(uint32_t cid, uint32_t port)
++/**********************************************************
++ * init
++ **********************************************************/
++int __init bhv_init_guestconn(uint32_t cid, uint32_t port)
 +{
 +	if (!is_bhv_initialized())
 +		return 0;
@@ -13385,13 +13974,13 @@ index 000000000..b7c26fdd2
 +	bhv_guestconn_port = port;
 +	return 0;
 +}
-\ No newline at end of file
++/**********************************************************/
 diff --git security/bhv/guestlog.c security/bhv/guestlog.c
 new file mode 100644
-index 000000000..105b2776a
+index 000000000..f35da6bda
 --- /dev/null
 +++ security/bhv/guestlog.c
-@@ -0,0 +1,471 @@
+@@ -0,0 +1,484 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -13505,12 +14094,17 @@ index 000000000..105b2776a
 +		 * (represented by bprm).  'current' is the process doing
 +		 * the execve().
 +		 */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)
++	if (get_user_pages_remote(bprm->mm, addr, 1, FOLL_FORCE, &page, NULL) <=
++	    0)
++#else /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0) */
 +	if (get_user_pages_remote(bprm->mm, addr, 1, FOLL_FORCE, &page, NULL,
 +				  NULL) <= 0)
++#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0) */
 +		return NULL;
-+#else
++#else /* CONFIG_MMU */
 +	page = bprm->page[addr / PAGE_SIZE];
-+#endif
++#endif /* CONFIG_MMU */
 +	return page;
 +}
 +
@@ -13606,9 +14200,9 @@ index 000000000..105b2776a
 +	msg->process_exec.pid = pid;
 +	msg->process_exec.parent_pid = parent_pid;
 +	strscpy(msg->process_exec.name, comm, TASK_COMM_LEN);
-+	env_offset = bhv_get_args_env(bprm, 0, bprm->argc,
-+				      msg->process_exec.args,
-+				      BHV_LOG_PROC_EXEC_ARGS_ENV_SZ);
++	env_offset =
++		bhv_get_args_env(bprm, 0, bprm->argc, msg->process_exec.args,
++				 BHV_LOG_PROC_EXEC_ARGS_ENV_SZ);
 +	bhv_get_args_env(bprm, env_offset, bprm->envc, msg->process_exec.env,
 +			 BHV_LOG_PROC_EXEC_ARGS_ENV_SZ);
 +	sz = bhv_guestlog_calc_msg_sz(msg->header.type, 0);
@@ -13752,7 +14346,9 @@ index 000000000..105b2776a
 +				  sz);
 +}
 +
-+static void bhv_guestlog_char_array_into_buf(char *dst, size_t dst_size, char **arr) {
++static void bhv_guestlog_char_array_into_buf(char *dst, size_t dst_size,
++					     char **arr)
++{
 +	char *cur;
 +	unsigned int i;
 +	ssize_t cur_len = 0;
@@ -13811,8 +14407,10 @@ index 000000000..105b2776a
 +	}
 +
 +	strscpy(msg->kernel_exec.path, path, sizeof(msg->kernel_exec.path));
-+	bhv_guestlog_char_array_into_buf(msg->kernel_exec.args, sizeof(msg->kernel_exec.args), argv);
-+	bhv_guestlog_char_array_into_buf(msg->kernel_exec.env, sizeof(msg->kernel_exec.env), envp);
++	bhv_guestlog_char_array_into_buf(msg->kernel_exec.args,
++					 sizeof(msg->kernel_exec.args), argv);
++	bhv_guestlog_char_array_into_buf(msg->kernel_exec.env,
++					 sizeof(msg->kernel_exec.env), envp);
 +	sz = bhv_guestlog_calc_msg_sz(msg->header.type, 0);
 +	BUG_ON(sz > BHV_GUESTLOG_MAX_MSG_SZ);
 +	msg->header.sz = sz;
@@ -13822,7 +14420,10 @@ index 000000000..105b2776a
 +				  sz);
 +}
 +
-+int __init bhv_guestlog_init()
++/*****************************************************************
++ * init
++ *****************************************************************/
++int __init bhv_init_guestlog()
 +{
 +	unsigned long r;
 +
@@ -13863,15 +14464,16 @@ index 000000000..105b2776a
 +
 +	return 0;
 +}
-diff --git security/bhv/init.c security/bhv/init.c
++/***************************************************************/
+diff --git security/bhv/init/init.c security/bhv/init/init.c
 new file mode 100644
-index 000000000..d9e71155d
+index 000000000..bff7db82f
 --- /dev/null
-+++ security/bhv/init.c
-@@ -0,0 +1,175 @@
++++ security/bhv/init/init.c
+@@ -0,0 +1,244 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Copyright (C) 2022 - BedRock Systems Inc
++ * Copyright (C) 2024 - BedRock Systems Inc
 + * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
 + *          Sergej Proskurin <sergej@bedrocksystems.com>
 + *          Sebastian Vogl <sebastian@bedrocksystems.com>
@@ -13880,20 +14482,32 @@ index 000000000..d9e71155d
 +
 +#include <asm/io.h>
 +#include <asm/sections.h>
++#include <asm/syscall.h>
 +#include <linux/kmod.h>
 +#include <linux/mm.h>
++#include <linux/slab.h>
 +
++#include <bhv/bhv_print.h>
++
++#include <bhv/bhv.h>
++#include <bhv/guestconn.h>
++#include <bhv/guestlog.h>
++#include <bhv/guestpolicy.h>
++#include <bhv/creds.h>
++#include <bhv/fileops_internal.h>
++#include <bhv/integrity.h>
 +#include <bhv/interface/common.h>
 +#include <bhv/interface/hypercall.h>
-+#include <bhv/interface/init.h>
-+#include <bhv/interface/integrity.h>
-+#include <bhv/integrity.h>
-+#include <bhv/init.h>
-+#include <bhv/creds.h>
++
++#include <bhv/init/init.h>
 +
 +#ifndef VASKM // inside kernel tree
 +#include <bhv/kernel-kln.h>
 +
++#ifdef CONFIG_SECURITY_SELINUX
++extern int selinux_enabled_boot __initdata;
++int sel_direct_load(void *data, size_t count);
++#endif /* CONFIG_SECURITY_SELINUX */
 +#else // out of tree
 +#include <kln.h>
 +#include <common.h>
@@ -13901,6 +14515,8 @@ index 000000000..d9e71155d
 +extern uint8_t __bhv_text_start[];
 +extern uint8_t __bhv_text_end[];
 +#endif // VASKM
++
++bool __bhv_init_done __ro_after_init = false;
 +
 +static inline void
 +bhv_section_run_ctor(bhv_init_init_bhv_section_run_t *curr_item,
@@ -13919,8 +14535,7 @@ index 000000000..d9e71155d
 +		prev_item->next = bhv_virt_to_phys(curr_item);
 +}
 +
-+
-+int __init bhv_init_hyp(void *bhv_data, size_t bhv_data_size)
++static int __init bhv_init_hyp(void *bhv_data, size_t bhv_data_size)
 +{
 +	unsigned long r;
 +	unsigned int region_counter = 0;
@@ -13930,9 +14545,7 @@ index 000000000..d9e71155d
 +		bhv_mem_region_t mem_regions[BHV_INIT_MAX_REGIONS];
 +		bhv_init_init_bhv_section_run_t bhv_section_runs[];
 +	} *arg = bhv_data;
-+	BUG_ON((void *)&arg->bhv_section_runs[2] - bhv_data >
-+	       +bhv_data_size);
-+
++	BUG_ON((void *)&arg->bhv_section_runs[2] - bhv_data > +bhv_data_size);
 +
 +#ifndef VASKM // inside kernel tree
 +#define BI_ALIGN_START(start) (unsigned long)(start)
@@ -14029,14 +14642,180 @@ index 000000000..d9e71155d
 +	arg->init_arg.bhv_init_init_arg.bhv_region_head =
 +		bhv_virt_to_phys(&arg->bhv_section_runs);
 +
-+	r = bhv_hypercall_vas(BHV_VAS_BACKEND_INIT, BHV_VAS_INIT_OP_INIT,
-+			      arg);
++	r = bhv_hypercall_vas(BHV_VAS_BACKEND_INIT, BHV_VAS_INIT_OP_INIT, arg);
 +	if (r)
 +		return -EINVAL;
 +	return 0;
 +}
 +
-+int __init_km bhv_start_hyp(bhv_init_start_config_t *config)
++void __init bhv_init_platform(void)
++{
++	int rv;
++	uint32_t cid, port;
++	void *bhv_data_ptr = NULL;
++
++	bhv_init_arch();
++
++#ifndef VASKM // inside kernel tree
++	rv = bhv_init_hyp(__bhv_data_start, __bhv_data_end - __bhv_data_start);
++	bhv_data_ptr = __bhv_data_start;
++
++	bhv_debug("Kernel text: start=0x%px end=0x%px", _stext, _etext);
++	bhv_debug("System call table: start=0x%px", sys_call_table);
++
++#else // out of tree
++	bhv_data_ptr = kmalloc(PAGE_SIZE, GFP_KERNEL);
++	// no kfree on purpose
++	if (!bhv_data_ptr) {
++		pr_err("BHV: cannot allocate bhv_data\n");
++		return;
++	}
++
++	rv = bhv_init_hyp(bhv_data_ptr, PAGE_SIZE);
++#endif // VASKM
++
++	if (rv) {
++		pr_err("BHV: init hypercall failed: hypercall returned %u", rv);
++		return;
++	}
++
++	bhv_initialized = true;
++	bhv_configuration_bitmap = (unsigned long *)bhv_data_ptr;
++	cid = *((uint32_t *)(bhv_data_ptr + sizeof(unsigned long)));
++	port = *((uint32_t *)(bhv_data_ptr + sizeof(unsigned long) +
++			      sizeof(uint32_t)));
++
++	rv = bhv_init_guestconn(cid, port);
++	if (rv) {
++		bhv_fail(
++			"BHV: Cannot configure the BHV guest connection subsystem");
++		return;
++	}
++
++	rv = bhv_init_guestlog();
++	if (rv) {
++		bhv_fail("BHV: Cannot configure the BHV logging subsystem");
++		return;
++	}
++
++	rv = bhv_init_cred();
++	if (rv) {
++		bhv_fail("BHV: Cannot configure the BHV creds subsystem");
++		return;
++	}
++
++	bhv_init_fileops();
++
++#ifndef VASKM // inside kernel tree
++#if defined(CONFIG_SECURITY_SELINUX) &&                                        \
++	!defined(CONFIG_BHV_ALLOW_SELINUX_GUEST_ADMIN)
++	selinux_enabled_boot = bhv_guest_policy_is_enabled() ? 1 : 0;
++#endif
++#endif // VASKM
++
++	__bhv_init_done = true;
++}
+diff --git security/bhv/init/late_start.c security/bhv/init/late_start.c
+new file mode 100644
+index 000000000..f7eb50a63
+--- /dev/null
++++ security/bhv/init/late_start.c
+@@ -0,0 +1,21 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2024 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ *          Tommaso Frassetto <tommaso.frassetto@bedrocksystems.com>
++ */
++
++#include <bhv/bhv.h>
++#include <bhv/integrity.h>
++
++#include <bhv/init/late_start.h>
++
++void bhv_late_start(void)
++{
++	int r = bhv_late_start_init_ptpg();
++	if (r) {
++		bhv_fail("ptpg init failed");
++	}
++}
+diff --git security/bhv/init/mm_init.c security/bhv/init/mm_init.c
+new file mode 100644
+index 000000000..4882e1c7c
+--- /dev/null
++++ security/bhv/init/mm_init.c
+@@ -0,0 +1,29 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2024 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ */
++
++#include <bhv/creds.h>
++#include <bhv/integrity.h>
++#include <bhv/guestconn.h>
++#include <bhv/file_protection.h>
++#include <bhv/fileops_protection.h>
++
++#ifndef VASKM // inside kernel tree
++#include <bhv/acl.h>
++#endif // VASKM
++
++#include <bhv/init/mm_init.h>
++
++void __init bhv_mm_init(void)
++{
++	bhv_mm_init_integrity();
++#ifndef VASKM // inside kernel tree
++	bhv_mm_init_acl();
++#endif // VASKM
++	bhv_mm_init_guestconn();
++	bhv_mm_init_cred();
++	bhv_mm_init_file_protection();
++	bhv_mm_init_fileops_protection();
++}
+diff --git security/bhv/init/start.c security/bhv/init/start.c
+new file mode 100644
+index 000000000..4eb2adbc6
+--- /dev/null
++++ security/bhv/init/start.c
+@@ -0,0 +1,179 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2024 - BedRock Systems Inc
++ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
++ *          Sergej Proskurin <sergej@bedrocksystems.com>
++ *          Sebastian Vogl <sebastian@bedrocksystems.com>
++ *          Tommaso Frassetto <tommaso.frassetto@bedrocksystems.com>
++ */
++
++#include <asm/sections.h>
++
++#include <linux/types.h>
++
++#include <bhv/interface/common.h>
++#include <bhv/interface/hypercall.h>
++#include <bhv/interface/init.h>
++
++#include <bhv/bhv.h>
++#include <bhv/guestpolicy.h>
++#include <bhv/integrity.h>
++#include <bhv/patch.h>
++#include <bhv/sysfs.h>
++#include <bhv/guestconn.h>
++
++#include <bhv/init/start.h>
++
++#ifndef VASKM // inside kernel tree
++#ifdef CONFIG_SECURITY_SELINUX
++int sel_direct_load(void *data, size_t count);
++#endif /* CONFIG_SECURITY_SELINUX */
++#endif // VASKM
++
++static inline int bhv_start_hyp(bhv_init_start_config_t *config)
 +{
 +	unsigned long r = bhv_hypercall_vas(BHV_VAS_BACKEND_INIT,
 +					    BHV_VAS_INIT_OP_START, config);
@@ -14044,12 +14823,151 @@ index 000000000..d9e71155d
 +		return -EINVAL;
 +	return 0;
 +}
++
++static inline void do_start(void)
++{
++	int rc;
++	uint16_t num_pages = 1;
++	bhv_init_start_config_t *config =
++		(bhv_init_start_config_t *)__get_free_pages(GFP_KERNEL, 0);
++
++	if (config == NULL) {
++		bhv_fail("Unable to allocate start config");
++		return;
++	}
++
++	config->num_pages = num_pages;
++
++	rc = bhv_start_hyp(config);
++	if (rc) {
++		pr_err("BHV: start hypercall failed: %d", rc);
++		free_pages((unsigned long)config, 0);
++		return;
++	}
++
++	if (!config->valid) {
++		num_pages = config->num_pages;
++		free_pages((unsigned long)config, 0);
++
++		config = (bhv_init_start_config_t *)__get_free_pages(
++			GFP_KERNEL, order_base_2(num_pages));
++
++		if (config == NULL) {
++			bhv_fail("Unable to allocate start config");
++			return;
++		}
++
++		config->num_pages = num_pages;
++
++		rc = bhv_start_hyp(config);
++		if (rc) {
++			pr_err("BHV: start hypercall failed: %d", rc);
++			free_pages((unsigned long)config,
++				   order_base_2(num_pages));
++			return;
++		}
++
++		if (!config->valid) {
++			bhv_fail("host returned invalid configuration");
++			free_pages((unsigned long)config,
++				   order_base_2(num_pages));
++			return;
++		}
++	}
++
++	if (bhv_guest_policy_is_enabled()) {
++#if !defined VASKM && defined CONFIG_SECURITY_SELINUX
++		if ((sizeof(bhv_init_start_config_t) + config->data_sz) >
++		    (num_pages * PAGE_SIZE)) {
++			bhv_fail("invalid guest policy size");
++			free_pages((unsigned long)config,
++				   order_base_2(num_pages));
++			return;
++		}
++
++		rc = sel_direct_load(config->data, config->data_sz);
++		if (rc) {
++			bhv_fail("guest policy load fail");
++			free_pages((unsigned long)config,
++				   order_base_2(num_pages));
++			return;
++		}
++#else // !defined VASKM && defined CONFIG_SECURITY_SELINUX
++		bhv_fail("guest policy available without target LSM");
++#endif // !defined VASKM && defined CONFIG_SECURITY_SELINUX
++	}
++
++	free_pages((unsigned long)config, order_base_2(num_pages));
++}
++
++bool __init_km bhv_start(void)
++{
++	int rc;
++#ifndef VASKM // inside kernel tree
++	bhv_mem_region_node_t *n[2];
++#endif // VASKM
++
++	if (!is_bhv_initialized())
++		return false;
++
++#ifndef VASKM // inside kernel tree
++	if (bhv_integrity_is_enabled()) {
++		bhv_start_ptpg();
++
++		rc = kmem_cache_alloc_bulk(bhv_mem_region_cache, GFP_KERNEL, 2,
++					   (void **)&n);
++		if (!rc) {
++			bhv_fail("BHV: failed to allocate mem region");
++			return false;
++		}
++
++		/* Remove init text from host mappings */
++		n[0]->region.bhv_mem_region_remove.start_addr =
++			virt_to_phys(_sinittext);
++		n[0]->region.bhv_mem_region_remove.next =
++			virt_to_phys(&(n[1]->region));
++
++		/* Remove exit text from host mappings */
++		n[1]->region.bhv_mem_region_remove.start_addr =
++			virt_to_phys(_sexittext);
++		n[1]->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
++
++		rc = bhv_remove_kern_phys_mem_region_by_region_hyp(
++			&(n[0]->region));
++		if (rc)
++			pr_err("BHV: remove region hypercall failed: %d", rc);
++
++		kmem_cache_free_bulk(bhv_mem_region_cache, 2, (void **)&n);
++	}
++#endif // VASKM
++
++	rc = bhv_start_arch();
++	if (rc)
++		pr_err("BHV: bhv_start_arch failed");
++
++#ifndef VASKM // inside kernel tree
++	if (bhv_integrity_is_enabled()) {
++		// Free alternatives used during init
++		bhv_start_delete_alternatives();
++	}
++
++	bhv_start_guestconn();
++#endif // VASKM
++
++	do_start();
++
++	if (bhv_integrity_is_enabled()) {
++		bhv_start_sysfs();
++	}
++
++	return true;
++}
 diff --git security/bhv/inode.c security/bhv/inode.c
 new file mode 100644
-index 000000000..734e8594f
+index 000000000..a2a25ea0a
 --- /dev/null
 +++ security/bhv/inode.c
-@@ -0,0 +1,389 @@
+@@ -0,0 +1,396 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -14279,7 +15197,7 @@ index 000000000..734e8594f
 +int bhv_inode_bprm_creds_from_file(struct linux_binprm *bprm, struct file *file)
 +{
 +	int rc = 0;
-+	bool is_setid = false;
++	bool is_setxid = false;
 +	const struct cred *old = current_cred();
 +	struct cred *new = bprm->cred;
 +	struct inode *inode = NULL;
@@ -14287,26 +15205,33 @@ index 000000000..734e8594f
 +	if (!bhv_inode_is_active())
 +		return 0;
 +
-+	/*
-+	 * We do not need to explicitly read the mode bits from the inode to
-+	 * identify whether set(u|g)id is set via (mode & (S_ISUID | S_ISGID));
-+	 * especially since this hook gets called right after having set up the
-+	 * new bprm credentials by taking into account the inode's mode.
-+	 */
-+	is_setid = __is_setuid(new, old) || __is_setgid(new, old);
-+	if (!is_setid)
++	is_setxid = __is_setuid(new, old) || __is_setgid(new, old);
++	if (!is_setxid)
 +		return 0;
 +
 +	inode = d_backing_inode(file->f_path.dentry);
 +
++	/*
++	 * We consider the following cases if is_setxid == true:
++	 * - The new executable has the SXID bits set: verify its inode.
++	 * - The new executable does not have the SXID bits set: verify
++	 *   credentials of the current process.
++	 */
++
 +	inode_lock(inode);
-+	rc = bhv_inode_verify(inode, file);
-+	inode_unlock(inode);
++
++	if (is_sxid(inode->i_mode)) {
++		rc = bhv_inode_verify(inode, file);
++		inode_unlock(inode);
++	} else {
++		inode_unlock(inode);
++		rc = bhv_cred_verify(current);
++	}
 +
 +	return rc;
 +}
 +
-+int bhv_inode_task_fix_setuid(struct cred *new, const struct cred *old, int)
++int bhv_inode_task_fix_setuid(struct cred *new, const struct cred *old, int _)
 +{
 +	if (!bhv_inode_is_active())
 +		return 0;
@@ -14314,7 +15239,7 @@ index 000000000..734e8594f
 +	return bhv_cred_verify(current);
 +}
 +
-+int bhv_inode_task_fix_setgid(struct cred *new, const struct cred *old, int)
++int bhv_inode_task_fix_setgid(struct cred *new, const struct cred *old, int _)
 +{
 +	if (!bhv_inode_is_active())
 +		return 0;
@@ -14441,10 +15366,10 @@ index 000000000..734e8594f
 +}
 diff --git security/bhv/integrity.c security/bhv/integrity.c
 new file mode 100644
-index 000000000..5d008cef8
+index 000000000..a31a112cb
 --- /dev/null
 +++ security/bhv/integrity.c
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,302 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -14465,7 +15390,10 @@ index 000000000..5d008cef8
 +struct kmem_cache *bhv_mem_region_cache;
 +struct kmem_cache *bhv_integrity_arg_cache;
 +
-+void __init bhv_integrity_mm_init(void)
++/************************************************************
++ * mm_init
++ ************************************************************/
++void __init bhv_mm_init_integrity(void)
 +{
 +	bhv_mem_region_cache = kmem_cache_create(
 +		"bhv_mem_region_cache", sizeof(bhv_mem_region_node_t), 0,
@@ -14475,6 +15403,7 @@ index 000000000..5d008cef8
 +		"bhv_integrity_arg_cache", sizeof(bhv_integrity_arg_t), 0,
 +		SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
 +}
++/************************************************************/
 +
 +int bhv_integrity_freeze_events(uint64_t flags)
 +{
@@ -14673,6 +15602,9 @@ index 000000000..5d008cef8
 +static uint64_t _ptpg_pgd_value __ro_after_init;
 +static atomic_t _ptpg_ready __ro_after_init = ATOMIC_INIT(0);
 +
++/**************************************************************
++ * start
++ **************************************************************/
 +void __init_km bhv_start_ptpg(void)
 +{
 +	_ptpg_pgd_offset = 0;
@@ -14682,12 +15614,16 @@ index 000000000..5d008cef8
 +		return;
 +	}
 +
-+	bhv_get_pt_protect_pgd_data(&_ptpg_pgd_offset, &_ptpg_pgd_value);
++	bhv_start_get_pt_protect_pgd_data(&_ptpg_pgd_offset, &_ptpg_pgd_value);
 +
 +	atomic_inc(&_ptpg_ready);
 +}
++/**************************************************************/
 +
-+int bhv_integrity_init_ptpg(void)
++/**************************************************************
++ * late_start
++ **************************************************************/
++int bhv_late_start_init_ptpg(void)
 +{
 +	unsigned long r;
 +	bhv_integrity_init_ptpg_arg_t *arg;
@@ -14704,7 +15640,7 @@ index 000000000..5d008cef8
 +		return -ENOMEM;
 +	}
 +
-+	bhv_get_pt_protect_data(arg);
++	bhv_late_start_get_pt_protect_data(arg);
 +
 +	r = bhv_hypercall_vas(BHV_VAS_BACKEND_INTEGRITY,
 +			      BHV_VAS_INTEGRITY_OP_PTPG_INIT, arg);
@@ -14716,6 +15652,7 @@ index 000000000..5d008cef8
 +	free_pages((unsigned long)arg, 0);
 +	return 0;
 +}
++/**************************************************************/
 +
 +void bhv_pt_protect_check_pgd(struct mm_struct *mm)
 +{
@@ -14735,9 +15672,219 @@ index 000000000..5d008cef8
 +		}
 +	}
 +}
+diff --git security/bhv/keyring.c security/bhv/keyring.c
+new file mode 100644
+index 000000000..c14777309
+--- /dev/null
++++ security/bhv/keyring.c
+@@ -0,0 +1,204 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2023 - BedRock Systems Inc
++ * Authors:  Sergej Proskurin <sergej@bedrocksystems.com>
++ */
++
++#include <linux/key-type.h>
++#include <linux/siphash.h>
++
++#include <bhv/keyring.h>
++#include <bhv/interface/hypercall.h>
++#include <bhv/interface/keyring.h>
++
++#define BHV_KEYRING_HYP(op, arg)                                               \
++	bhv_hypercall_vas(BHV_VAS_BACKEND_KEYRING, op, arg)
++
++#define BHV_KEYRING_REGISTER_HYP(arg)                                          \
++	BHV_KEYRING_HYP(BHV_VAS_KEYRING_OP_REGISTER, arg)
++#define BHV_KEYRING_VERIFY_HYP(arg)                                            \
++	BHV_KEYRING_HYP(BHV_VAS_KEYRING_OP_VERIFY, arg)
++#define BHV_KEYRING_LOG_HYP(arg) BHV_KEYRING_HYP(BHV_VAS_KEYRING_OP_LOG, arg)
++
++#define BHV_KEYRING_DEBUG 0
++
++static bool bhv_keyring_initialized __ro_after_init = false;
++
++extern siphash_key_t bhv_siphash_key __ro_after_init;
++
++static inline bool bhv_keyring_is_active(void)
++{
++	if (!bhv_keyring_initialized)
++		return false;
++
++	return bhv_keyring_is_enabled();
++}
++
++static size_t collect_keyring_invariants(char *buf, const struct key *keyring,
++					 uint64_t anchor, size_t max_size)
++{
++	char *_buf = NULL;
++	uint64_t bound_context = 0;
++	struct key keyring_copy;
++	static const size_t buf_size = sizeof(uint64_t) + sizeof(struct key);
++
++	BUG_ON(!buf || max_size < buf_size);
++
++	_buf = buf;
++
++	memcpy(&keyring_copy, keyring, sizeof(struct key));
++
++	/* Exclude mutable fields from the keyring to be hashed. */
++
++	refcount_set(&keyring_copy.usage, 0);
++	memset(&keyring_copy.graveyard_link, 0, sizeof(struct list_head));
++	memset(&keyring_copy.serial_node, 0, sizeof(struct rb_node));
++#ifdef CONFIG_KEY_NOTIFICATIONS
++	keyring_copy.watchers = NULL;
++#endif
++	memset(&keyring_copy.sem, 0, sizeof(struct rw_semaphore));
++	keyring_copy.last_used_at = 0;
++	keyring_copy.datalen = 0;
++	memset(&keyring_copy.payload, 0, sizeof(union key_payload));
++
++	bound_context = (uint64_t)keyring ^ anchor;
++
++	_buf = memcpy(_buf, &bound_context, sizeof(uint64_t));
++	_buf += sizeof(uint64_t);
++
++	_buf = memcpy(_buf, &keyring_copy, sizeof(struct key));
++
++	return buf_size;
++}
++
++static uint64_t siphash_keyring_state(const struct key *keyring,
++				      uint64_t anchor)
++{
++#define MAX_BUF_SIZE sizeof(uint64_t) + sizeof(struct key)
++	char buf[MAX_BUF_SIZE];
++	size_t size =
++		collect_keyring_invariants(buf, keyring, anchor, MAX_BUF_SIZE);
++	return siphash(&buf, size, &bhv_siphash_key);
++}
++
++int bhv_keyring_verify_locked(struct key *keyring, void *anchor)
++{
++	int rc = 0;
++	bhv_keyring_arg_t arg = { 0 };
++	enum event_type type = EVENT_NONE;
++
++	if (!bhv_keyring_is_active())
++		return 0;
++
++	if (!keyring || !anchor)
++		return -ENOKEY;
++
++	arg.keyring_verify.keyring.addr = (uint64_t)anchor;
++	arg.keyring_verify.keyring.hmac =
++		siphash_keyring_state(keyring, (uint64_t)anchor);
++
++	rc = BHV_KEYRING_VERIFY_HYP(&arg);
++	if (rc) {
++		pr_err("[BHV] %s: an error occurred during the VERIFY hypercall\n",
++		       __FUNCTION__);
++		return rc;
++	}
++
++#if BHV_KEYRING_DEBUG
++	pr_info("[BHV] %s: keyring @ %px anchor @ %px | \"%s\" serial=%d",
++		__FUNCTION__, keyring, anchor, keyring->index_key.description,
++		keyring->serial);
++#endif
++
++	type = arg.keyring_verify.ret;
++
++	if (!rc && type != EVENT_NONE) {
++		populate_event_context(&arg.keyring_log.context, true);
++
++		arg.keyring_log.event_type = type;
++		arg.keyring_log.addr = (uint64_t)(keyring);
++		arg.keyring_log.uid = (uint32_t)(__kuid_val(keyring->uid));
++		arg.keyring_log.gid = (uint32_t)(__kgid_val(keyring->gid));
++		arg.keyring_log.perm = (uint32_t)(keyring->perm);
++		arg.keyring_log.serial = (uint32_t)(keyring->serial);
++
++		strncpy(arg.keyring_log.desc, keyring->description,
++			EVENT_MAX_PATH_SZ);
++
++		rc = BHV_KEYRING_LOG_HYP(&arg);
++		if (rc) {
++			pr_err("[BHV] %s: an error occurred during the LOG hypercall\n",
++			       __FUNCTION__);
++			return rc;
++		}
++
++		return (arg.keyring_log.block) ? -EPERM : 0;
++	}
++
++	return rc;
++}
++
++int bhv_keyring_verify(struct key *keyring, void *anchor)
++{
++	int rc = 0;
++
++	if (!keyring || !anchor)
++		return -ENOKEY;
++
++	down_read(&keyring->sem);
++	rc = bhv_keyring_verify_locked(keyring, anchor);
++	up_read(&keyring->sem);
++
++	return rc;
++}
++
++static int bhv_keyring_register(struct key *keyring, void *anchor)
++{
++	int rc = 0;
++	bhv_keyring_arg_t arg = { 0 };
++
++	if (!bhv_keyring_is_active())
++		return 0;
++
++	if (!keyring || !anchor)
++		return -ENOKEY;
++
++	/* Note: we index system-trusted keyrings by it's global anchor. */
++	arg.keyring_register.keyring.addr = (uint64_t)anchor;
++	arg.keyring_register.keyring.hmac =
++		siphash_keyring_state(keyring, (uint64_t)anchor);
++
++	rc = BHV_KEYRING_REGISTER_HYP(&arg);
++	if (rc) {
++		pr_err("[BHV] %s: an error occurred during the REGISTER hypercall\n",
++		       __FUNCTION__);
++		return rc;
++	}
++
++#if BHV_KEYRING_DEBUG
++	pr_info("[BHV] %s: keyring @ %px anchor @ %px | \"%s\" serial=%d",
++		__FUNCTION__, keyring, anchor, keyring->index_key.description,
++		keyring->serial);
++#endif
++
++	return (arg.keyring_register.block) ? -EPERM : 0;
++}
++
++int bhv_keyring_register_system_trusted(struct key **k)
++{
++	void *anchor = k;
++	return bhv_keyring_register(*k, anchor);
++}
++
++int __init bhv_init_keyring(void)
++{
++	if (!bhv_keyring_is_enabled())
++		return -EPERM;
++
++	if (bhv_keyring_initialized)
++		return -EPERM;
++
++	bhv_keyring_initialized = true;
++
++	return 0;
++}
 diff --git security/bhv/lsm.c security/bhv/lsm.c
 new file mode 100644
-index 000000000..4d94951d5
+index 000000000..059e7858f
 --- /dev/null
 +++ security/bhv/lsm.c
 @@ -0,0 +1,650 @@
@@ -15379,7 +16526,7 @@ index 000000000..4d94951d5
 +	LSM_HOOK_INIT(d_instantiate, bhv_inode_d_instantiate),
 +};
 +
-+static int __init bhv_init(void)
++static int __init bhv_lsm_init(void)
 +{
 +	pr_info("[bhv] LSM active");
 +	security_add_hooks(bhv_hooks, ARRAY_SIZE(bhv_hooks), "bhv");
@@ -15388,7 +16535,7 @@ index 000000000..4d94951d5
 +
 +DEFINE_LSM(bhv) = {
 +	.name = "bhv",
-+	.init = bhv_init,
++	.init = bhv_lsm_init,
 +};
 +#endif // VASKM
 diff --git security/bhv/memory_freeze.c security/bhv/memory_freeze.c
@@ -15468,10 +16615,10 @@ index 000000000..083105ffc
 \ No newline at end of file
 diff --git security/bhv/module.c security/bhv/module.c
 new file mode 100644
-index 000000000..7df13540f
+index 000000000..55b71c168
 --- /dev/null
 +++ security/bhv/module.c
-@@ -0,0 +1,499 @@
+@@ -0,0 +1,615 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -15630,6 +16777,73 @@ index 000000000..7df13540f
 +				_bhv_link_node_op_remove);
 +}
 +
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
++static void bhv_prepare_mod_init(struct list_head *head,
++				 const struct module *mod,
++				 unsigned long base_flags)
++{
++	if (mod->mem[MOD_INIT_TEXT].size) {
++		/* Prepare the module region's .text section. */
++		bhv_create_section(head, mod->mem[MOD_INIT_TEXT].base,
++				   mod->mem[MOD_INIT_TEXT].size,
++				   BHV_MEM_TYPE_CODE_PATCHABLE, base_flags,
++				   "MODULE TEXT SECTION");
++	}
++
++	if (mod->mem[MOD_INIT_RODATA].size) {
++		/* Prepare the module region's .rodata section. */
++		bhv_create_section(head, mod->mem[MOD_INIT_RODATA].base,
++				   mod->mem[MOD_INIT_RODATA].size,
++				   BHV_MEM_TYPE_DATA_READ_ONLY, base_flags,
++				   "MODULE READ-ONLY SECTION");
++	}
++
++	/* Prepare the module region's .data section. */
++	if (mod->mem[MOD_INIT_DATA].size) {
++		bhv_create_section(head, mod->mem[MOD_INIT_DATA].base,
++				   mod->mem[MOD_INIT_DATA].size,
++				   BHV_MEM_TYPE_DATA, base_flags,
++				   "MODULE DATA SECTION");
++	}
++}
++
++static void bhv_prepare_mod_core(struct list_head *head,
++				 const struct module *mod,
++				 unsigned long base_flags)
++{
++	if (mod->mem[MOD_TEXT].size) {
++		/* Prepare the module region's .text section. */
++		bhv_create_section(head, mod->mem[MOD_TEXT].base,
++				   mod->mem[MOD_TEXT].size,
++				   BHV_MEM_TYPE_CODE_PATCHABLE, base_flags,
++				   "MODULE TEXT SECTION");
++	}
++
++	if (mod->mem[MOD_RODATA].size) {
++		/* Prepare the module region's .rodata section. */
++		bhv_create_section(head, mod->mem[MOD_RODATA].base,
++				   mod->mem[MOD_RODATA].size,
++				   BHV_MEM_TYPE_DATA_READ_ONLY, base_flags,
++				   "MODULE READ-ONLY SECTION");
++	}
++
++	/* Prepare the module region's .ro_after_init section. */
++	if (mod->mem[MOD_RO_AFTER_INIT].size) {
++		bhv_create_section(head, mod->mem[MOD_RO_AFTER_INIT].base,
++				   mod->mem[MOD_RO_AFTER_INIT].size,
++				   BHV_MEM_TYPE_DATA,
++				   base_flags | BHV_MEM_FLAGS_MUTABLE,
++				   "MODULE READ-ONLY AFTER INIT SECTION");
++	}
++
++	/* Prepare the module region's .data section. */
++	if (mod->mem[MOD_DATA].size) {
++		bhv_create_section(head, mod->mem[MOD_DATA].base,
++				   mod->mem[MOD_DATA].size, BHV_MEM_TYPE_DATA,
++				   base_flags, "MODULE DATA SECTION");
++	}
++}
++#else /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0) */
 +static void bhv_prepare_mod_layout(struct list_head *head,
 +				   const struct module_layout *layout,
 +				   unsigned long base_flags)
@@ -15669,21 +16883,32 @@ index 000000000..7df13540f
 +	}
 +}
 +
++static inline void bhv_prepare_mod_init(struct list_head *head,
++					const struct module *mod,
++					unsigned long base_flags)
++{
++	bhv_prepare_mod_layout(head, &mod->init_layout, base_flags);
++}
++
++static inline void bhv_prepare_mod_core(struct list_head *head,
++					const struct module *mod,
++					unsigned long base_flags)
++{
++	bhv_prepare_mod_layout(head, &mod->core_layout, base_flags);
++}
++#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0) */
++
 +static void bhv_prepare_mod(struct list_head *head, const struct module *mod)
 +{
-+	bhv_prepare_mod_layout(head, &mod->init_layout,
-+			       BHV_MEM_FLAGS_TRANSIENT);
++	bhv_prepare_mod_init(head, mod, BHV_MEM_FLAGS_TRANSIENT);
 +
 +#ifndef VASKM // inside kernel tree
-+	bhv_prepare_mod_layout(head, &mod->core_layout,
-+			       BHV_MEM_FLAGS_TRANSIENT);
++	bhv_prepare_mod_core(head, mod, BHV_MEM_FLAGS_TRANSIENT);
 +#else // out of tree
 +	if (mod == THIS_MODULE) {
-+		bhv_prepare_mod_layout(head, &mod->core_layout,
-+				       BHV_MEM_FLAGS_NONE);
++		bhv_prepare_mod_core(head, mod, BHV_MEM_FLAGS_NONE);
 +	} else {
-+		bhv_prepare_mod_layout(head, &mod->core_layout,
-+				       BHV_MEM_FLAGS_TRANSIENT);
++		bhv_prepare_mod_core(head, mod, BHV_MEM_FLAGS_TRANSIENT);
 +	}
 +#endif // VASKM
 +}
@@ -15740,23 +16965,46 @@ index 000000000..7df13540f
 +	bhv_remove_kern_phys_mem_region_by_owner_hyp(owner);
 +}
 +
-+static void bhv_complete_free_init(const struct module_layout *layout)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
++static inline void
++_bhv_complete_free_init(const struct module *mod,
++			struct list_head *bhv_region_list_head)
 +{
-+	int rc = 0;
-+	struct bhv_mem_region_node *n = NULL;
++	/* Prepare the module region's .text section. */
++	if (mod->mem[MOD_INIT_TEXT].size)
++		bhv_remove_section(bhv_region_list_head,
++				   mod->mem[MOD_INIT_TEXT].base,
++				   mod->mem[MOD_INIT_TEXT].size);
 +
-+	LIST_HEAD(bhv_region_list_head);
++	/* Prepare the module region's .rodata section. */
++	if (mod->mem[MOD_INIT_RODATA].size)
++		bhv_remove_section(bhv_region_list_head,
++				   mod->mem[MOD_INIT_RODATA].base,
++				   mod->mem[MOD_INIT_RODATA].size);
++
++	/* Prepare the module region's .data section. */
++	if (mod->mem[MOD_INIT_DATA].size)
++		bhv_remove_section(bhv_region_list_head,
++				   mod->mem[MOD_INIT_DATA].base,
++				   mod->mem[MOD_INIT_DATA].size);
++}
++#else /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0) */
++static inline void
++_bhv_complete_free_init(const struct module *mod,
++			struct list_head *bhv_region_list_head)
++{
++	const struct module_layout *layout = &mod->init_layout;
 +
 +	if (layout->size == 0)
 +		return;
 +
 +	/* Prepare the module region's .text section. */
-+	bhv_remove_section(&bhv_region_list_head, layout->base,
++	bhv_remove_section(bhv_region_list_head, layout->base,
 +			   layout->text_size);
 +
 +	/* Prepare the module region's .rodata section. */
 +	if (layout->ro_size - layout->text_size) {
-+		bhv_remove_section(&bhv_region_list_head,
++		bhv_remove_section(bhv_region_list_head,
 +				   (layout->base + layout->text_size),
 +				   (layout->ro_size - layout->text_size));
 +	}
@@ -15764,16 +17012,27 @@ index 000000000..7df13540f
 +	/* Prepare the module region's .ro_after_init section. */
 +	if (layout->ro_after_init_size - layout->ro_size) {
 +		bhv_remove_section(
-+			&bhv_region_list_head, (layout->base + layout->ro_size),
++			bhv_region_list_head, (layout->base + layout->ro_size),
 +			(layout->ro_after_init_size - layout->ro_size));
 +	}
 +
 +	/* Prepare the module region's .data section. */
 +	if (layout->size - layout->ro_after_init_size) {
-+		bhv_remove_section(&bhv_region_list_head,
++		bhv_remove_section(bhv_region_list_head,
 +				   (layout->base + layout->ro_after_init_size),
 +				   (layout->size - layout->ro_after_init_size));
 +	}
++}
++#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0) */
++
++static void bhv_complete_free_init(const struct module *mod)
++{
++	int rc = 0;
++	struct bhv_mem_region_node *n = NULL;
++
++	LIST_HEAD(bhv_region_list_head);
++
++	_bhv_complete_free_init(mod, &bhv_region_list_head);
 +
 +	if (list_empty(&bhv_region_list_head))
 +		return;
@@ -15799,9 +17058,14 @@ index 000000000..7df13540f
 +	int rc = 0;
 +	struct bhv_mem_region_node *n = NULL;
 +
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
++	void *base = mod->mem[MOD_RO_AFTER_INIT].base;
++	unsigned int size = mod->mem[MOD_RO_AFTER_INIT].size;
++#else /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0) */
 +	void *base = mod->core_layout.base + mod->core_layout.ro_size;
 +	unsigned int size =
 +		mod->core_layout.ro_after_init_size - mod->core_layout.ro_size;
++#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0) */
 +
 +	LIST_HEAD(bhv_region_list_head);
 +
@@ -15810,8 +17074,7 @@ index 000000000..7df13540f
 +	}
 +
 +	bhv_update_section(&bhv_region_list_head, base, size,
-+			   BHV_MEM_TYPE_DATA_READ_ONLY,
-+			   base_flags);
++			   BHV_MEM_TYPE_DATA_READ_ONLY, base_flags);
 +
 +	if (list_empty(&bhv_region_list_head))
 +		return;
@@ -15844,7 +17107,7 @@ index 000000000..7df13540f
 +		bhv_update_ro_after_init(mod, BHV_MEM_FLAGS_TRANSIENT);
 +	}
 +#endif // VASKM
-+	bhv_complete_free_init(&mod->init_layout);
++	bhv_complete_free_init(mod);
 +}
 +
 +void bhv_module_unload(const struct module *mod)
@@ -15912,21 +17175,21 @@ index 000000000..7df13540f
 +		return;
 +	bhv_bpf_protect(base, size, BHV_MEM_TYPE_CODE_PATCHABLE,
 +			BHV_MEM_FLAGS_TRANSIENT);
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0) || \
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0) ||                           \
 +	defined(VASKM_HAVE_BPF_PACK)
 +	bhv_add_bpf_code_range(((uint64_t)base) >> PAGE_SHIFT,
 +			       ((size + PAGE_SIZE - 1) >> PAGE_SHIFT));
-+#endif  // LINUX_VERSION_CODE >= 6.1 || VASKM_HAVE_BPF_PACK
++#endif // LINUX_VERSION_CODE >= 6.1 || VASKM_HAVE_BPF_PACK
 +}
 +
 +void bhv_bpf_unprotect(const void *base)
 +{
 +	if (!bhv_integrity_is_enabled())
 +		return;
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0) || \
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0) ||                           \
 +	defined(VASKM_HAVE_BPF_PACK)
 +	bhv_rm_bpf_code_range(((uint64_t)base) >> PAGE_SHIFT);
-+#endif  // LINUX_VERSION_CODE >= 6.1 || VASKM_HAVE_BPF_PACK
++#endif // LINUX_VERSION_CODE >= 6.1 || VASKM_HAVE_BPF_PACK
 +	bhv_release_memory_by_owner((uint64_t)base);
 +}
 +
@@ -15973,10 +17236,10 @@ index 000000000..7df13540f
 +#endif //VASKM
 diff --git security/bhv/patch_alternative.c security/bhv/patch_alternative.c
 new file mode 100644
-index 000000000..316f94143
+index 000000000..f9534fefa
 --- /dev/null
 +++ security/bhv/patch_alternative.c
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,211 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2022 - BedRock Systems Inc
@@ -15994,6 +17257,26 @@ index 000000000..316f94143
 +
 +DEFINE_MUTEX(bhv_alternatives_mutex);
 +static LIST_HEAD(bhv_alternatives_head);
++
++/**************************************************
++ * start
++ **************************************************/
++void bhv_start_delete_alternatives(void)
++{
++	struct bhv_alternatives_mod *i, *tmp;
++
++	bhv_alternatives_lock();
++	list_for_each_entry_safe (i, tmp, &bhv_alternatives_head, next) {
++		if (i->delete_policy == BHV_ALTERNATIVES_DELETE_AFTER_INIT) {
++			list_del(&(i->next));
++			if (i->allocated) {
++				kfree(i);
++			}
++		}
++	}
++	bhv_alternatives_unlock();
++}
++/**************************************************/
 +
 +void bhv_alternatives_add_module(struct alt_instr *begin, struct alt_instr *end,
 +				 struct bhv_alternatives_mod_arch *arch)
@@ -16014,22 +17297,6 @@ index 000000000..316f94143
 +
 +	bhv_alternatives_lock();
 +	list_add(&(n->next), &bhv_alternatives_head);
-+	bhv_alternatives_unlock();
-+}
-+
-+void bhv_alternatives_delete_after_init(void)
-+{
-+	struct bhv_alternatives_mod *i, *tmp;
-+
-+	bhv_alternatives_lock();
-+	list_for_each_entry_safe (i, tmp, &bhv_alternatives_head, next) {
-+		if (i->delete_policy == BHV_ALTERNATIVES_DELETE_AFTER_INIT) {
-+			list_del(&(i->next));
-+			if (i->allocated) {
-+				kfree(i);
-+			}
-+		}
-+	}
 +	bhv_alternatives_unlock();
 +}
 +
@@ -16747,276 +18014,12 @@ index 000000000..628e02222
 +
 +	return rv;
 +}
-diff --git security/bhv/start.c security/bhv/start.c
-new file mode 100644
-index 000000000..53d2f3a45
---- /dev/null
-+++ security/bhv/start.c
-@@ -0,0 +1,258 @@
-+// SPDX-License-Identifier: GPL-2.0-only
-+/*
-+ * Copyright (C) 2022 - BedRock Systems Inc
-+ * Authors: Jonas Pfoh <jonas@bedrocksystems.com>
-+ *          Sergej Proskurin <sergej@bedrocksystems.com>
-+ *          Sebastian Vogl <sebastian@bedrocksystems.com>
-+ *          Tommaso Frassetto <tommaso.frassetto@bedrocksystems.com>
-+ */
-+
-+#include <bhv/bhv_print.h>
-+
-+#include <asm/sections.h>
-+#include <asm/page.h>
-+#include <asm/io.h>
-+#include <asm/syscall.h>
-+
-+#include <linux/init_task.h>
-+#include <linux/slab.h>
-+#include <linux/module.h>
-+
-+#include <bhv/bhv.h>
-+#include <bhv/creds.h>
-+#include <bhv/guestconn.h>
-+#include <bhv/fileops_internal.h>
-+#include <bhv/guestlog.h>
-+#include <bhv/guestpolicy.h>
-+#include <bhv/init.h>
-+#include <bhv/integrity.h>
-+#include <bhv/interface/common.h>
-+#include <bhv/patch.h>
-+#include <bhv/start.h>
-+#include <bhv/sysfs.h>
-+
-+#ifndef VASKM // inside kernel tree
-+#ifdef CONFIG_SECURITY_SELINUX
-+extern int selinux_enabled_boot __initdata;
-+int sel_direct_load(void *data, size_t count);
-+#endif /* CONFIG_SECURITY_SELINUX */
-+#endif // VASKM
-+
-+bool __bhv_init_done __ro_after_init = false;
-+
-+bool __init bhv_init_platform(void)
-+{
-+	uint32_t cid, port;
-+
-+#ifndef VASKM // inside kernel tree
-+	int rv = bhv_init_hyp(__bhv_data_start,
-+			      __bhv_data_end - __bhv_data_start);
-+	void *bhv_data_ptr = __bhv_data_start;
-+
-+	bhv_debug("Kernel text: start=0x%px end=0x%px", _stext, _etext);
-+	bhv_debug("System call table: start=0x%px", sys_call_table);
-+
-+#else // out of tree
-+	void *bhv_data_ptr = NULL;
-+	const uint64_t bhv_data_size = PAGE_SIZE;
-+
-+	bhv_data_ptr = kmalloc(PAGE_SIZE, GFP_KERNEL);
-+	// no kfree on purpose
-+	if (!bhv_data_ptr) {
-+		pr_err("BHV: cannot allocate bhv_data\n");
-+		return false;
-+	}
-+
-+	int rv = bhv_init_hyp(bhv_data_ptr, bhv_data_size);
-+#endif // VASKM
-+
-+	if (rv) {
-+		pr_err("BHV: init hypercall failed: hypercall returned %u", rv);
-+		return false;
-+	}
-+
-+	bhv_initialized = true;
-+	bhv_configuration_bitmap = (unsigned long *)bhv_data_ptr;
-+	cid = *((uint32_t *)(bhv_data_ptr + sizeof(unsigned long)));
-+	port = *((uint32_t *)(bhv_data_ptr + sizeof(unsigned long) +
-+			      sizeof(uint32_t)));
-+
-+	rv = bhv_guestconn_init(cid, port);
-+	if (rv) {
-+		bhv_fail(
-+			"BHV: Cannot configure the BHV guest connection subsystem");
-+		return false;
-+	}
-+
-+	rv = bhv_guestlog_init();
-+	if (rv) {
-+		bhv_fail("BHV: Cannot configure the BHV logging subsystem");
-+		return false;
-+	}
-+
-+	rv = bhv_cred_init();
-+	if (rv) {
-+		bhv_fail("BHV: Cannot configure the BHV creds subsystem");
-+		return false;
-+	}
-+
-+	bhv_fileops_init();
-+
-+#ifndef VASKM // inside kernel tree
-+#if defined(CONFIG_SECURITY_SELINUX) &&                                        \
-+	!defined(CONFIG_BHV_ALLOW_SELINUX_GUEST_ADMIN)
-+	selinux_enabled_boot = bhv_guest_policy_is_enabled() ? 1 : 0;
-+#endif
-+#endif // VASKM
-+
-+	__bhv_init_done = true;
-+
-+	return true;
-+}
-+
-+static void __init_km do_start(void)
-+{
-+	int rc;
-+	uint16_t num_pages = 1;
-+	bhv_init_start_config_t *config =
-+		(bhv_init_start_config_t *)__get_free_pages(GFP_KERNEL, 0);
-+
-+	if (config == NULL) {
-+		bhv_fail("Unable to allocate start config");
-+		return;
-+	}
-+
-+	config->num_pages = num_pages;
-+
-+	rc = bhv_start_hyp(config);
-+	if (rc) {
-+		pr_err("BHV: start hypercall failed: %d", rc);
-+		free_pages((unsigned long)config, 0);
-+		return;
-+	}
-+
-+	if (!config->valid) {
-+		num_pages = config->num_pages;
-+		free_pages((unsigned long)config, 0);
-+
-+		config = (bhv_init_start_config_t *)__get_free_pages(
-+			GFP_KERNEL, order_base_2(num_pages));
-+
-+		if (config == NULL) {
-+			bhv_fail("Unable to allocate start config");
-+			return;
-+		}
-+
-+		config->num_pages = num_pages;
-+
-+		rc = bhv_start_hyp(config);
-+		if (rc) {
-+			pr_err("BHV: start hypercall failed: %d", rc);
-+			free_pages((unsigned long)config,
-+				   order_base_2(num_pages));
-+			return;
-+		}
-+
-+		if (!config->valid) {
-+			bhv_fail("host returned invalid configuration");
-+			free_pages((unsigned long)config,
-+				   order_base_2(num_pages));
-+			return;
-+		}
-+	}
-+
-+	if (bhv_guest_policy_is_enabled()) {
-+#if !defined VASKM && defined CONFIG_SECURITY_SELINUX
-+		if ((sizeof(bhv_init_start_config_t) + config->data_sz) >
-+		    (num_pages * PAGE_SIZE)) {
-+			bhv_fail("invalid guest policy size");
-+			free_pages((unsigned long)config,
-+				   order_base_2(num_pages));
-+			return;
-+		}
-+
-+		rc = sel_direct_load(config->data, config->data_sz);
-+		if (rc) {
-+			bhv_fail("guest policy load fail");
-+			free_pages((unsigned long)config,
-+				   order_base_2(num_pages));
-+			return;
-+		}
-+#else // !defined VASKM && defined CONFIG_SECURITY_SELINUX
-+		bhv_fail("guest policy available without target LSM");
-+#endif // !defined VASKM && defined CONFIG_SECURITY_SELINUX
-+	}
-+
-+	free_pages((unsigned long)config, order_base_2(num_pages));
-+}
-+
-+bool __init_km bhv_start(void)
-+{
-+	int rc;
-+#ifndef VASKM // inside kernel tree
-+	bhv_mem_region_node_t *n[2];
-+#endif // VASKM
-+
-+	if (!is_bhv_initialized())
-+		return false;
-+
-+#ifndef VASKM // inside kernel tree
-+	if (bhv_integrity_is_enabled()) {
-+		bhv_start_ptpg();
-+
-+		rc = kmem_cache_alloc_bulk(bhv_mem_region_cache, GFP_KERNEL, 2,
-+					   (void **)&n);
-+		if (!rc) {
-+			bhv_fail("BHV: failed to allocate mem region");
-+			return false;
-+		}
-+
-+		/* Remove init text from host mappings */
-+		n[0]->region.bhv_mem_region_remove.start_addr =
-+			virt_to_phys(_sinittext);
-+		n[0]->region.bhv_mem_region_remove.next =
-+			virt_to_phys(&(n[1]->region));
-+
-+		/* Remove exit text from host mappings */
-+		n[1]->region.bhv_mem_region_remove.start_addr =
-+			virt_to_phys(_sexittext);
-+		n[1]->region.bhv_mem_region_remove.next = BHV_INVALID_PHYS_ADDR;
-+
-+		rc = bhv_remove_kern_phys_mem_region_by_region_hyp(
-+			&(n[0]->region));
-+		if (rc)
-+			pr_err("BHV: remove region hypercall failed: %d", rc);
-+
-+		kmem_cache_free_bulk(bhv_mem_region_cache, 2, (void **)&n);
-+	}
-+#endif // VASKM
-+
-+	rc = bhv_start_arch();
-+	if (rc)
-+		pr_err("BHV: bhv_start_arch failed");
-+
-+#ifndef VASKM // inside kernel tree
-+	if (bhv_integrity_is_enabled()) {
-+		// Free alternatives used during init
-+		bhv_alternatives_delete_after_init();
-+	}
-+
-+	bhv_guestconn_start();
-+#endif // VASKM
-+
-+	do_start();
-+
-+	if (bhv_integrity_is_enabled()) {
-+		bhv_setup_sysfs();
-+	}
-+
-+	return true;
-+}
-+
-+void bhv_late_start(void)
-+{
-+	int r = bhv_integrity_init_ptpg();
-+	if (r) {
-+		bhv_fail("ptpg init failed");
-+	}
-+}
 diff --git security/bhv/sysfs.c security/bhv/sysfs.c
 new file mode 100644
-index 000000000..e254864e9
+index 000000000..066682a7f
 --- /dev/null
 +++ security/bhv/sysfs.c
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,67 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -17037,7 +18040,10 @@ index 000000000..e254864e9
 +#include <bhv/file_protection.h>
 +#include <bhv/fileops_protection.h>
 +
-+void __init_km bhv_setup_sysfs(void)
++/**********************************************************
++ * start
++ **********************************************************/
++void __init_km bhv_start_sysfs(void)
 +{
 +	struct kobject *bhv_kobj;
 +	struct kobject *version_kobj;
@@ -17060,33 +18066,33 @@ index 000000000..e254864e9
 +	CREATE_KOBJ(bhv_kobj, "bhv", hypervisor_kobj);
 +	
 +	CREATE_KOBJ(version_kobj, "version", bhv_kobj);
-+	bhv_setup_sysfs_version(version_kobj);
++	bhv_start_sysfs_version(version_kobj);
 +
 +	CREATE_KOBJ(integrity_kobj, "integrity", bhv_kobj);
 +	CREATE_KOBJ(integrity_freeze_kobj, "freeze", integrity_kobj);
-+	bhv_setup_sysfs_integrity_freeze(integrity_freeze_kobj);
++	bhv_start_sysfs_integrity_freeze(integrity_freeze_kobj);
 +
 +	if (bhv_reg_protect_is_enabled()) {
 +		CREATE_KOBJ(register_kobj, "register", bhv_kobj);
 +		CREATE_KOBJ(register_freeze_kobj, "freeze", register_kobj);
 +
-+		bhv_setup_sysfs_reg_protect(register_freeze_kobj);
++		bhv_start_sysfs_reg_protect(register_freeze_kobj);
 +	}
 +
 +	if (bhv_fileops_file_protection_is_enabled()) {
 +		CREATE_KOBJ(fops_kobj, "fileops_protection", bhv_kobj);
 +		CREATE_KOBJ(fopsstatus_kobj, "status", fops_kobj);
 +
-+		bhv_setup_sysfs_fileops_protection(fops_kobj,
-+						   fopsstatus_kobj);
++		bhv_start_sysfs_fileops_protection(fops_kobj, fopsstatus_kobj);
 +	}
 +}
++/**********************************************************/
 diff --git security/bhv/sysfs_fops.c security/bhv/sysfs_fops.c
 new file mode 100644
-index 000000000..8e38fa02f
+index 000000000..9232bfc40
 --- /dev/null
 +++ security/bhv/sysfs_fops.c
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,168 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -17227,7 +18233,10 @@ index 000000000..8e38fa02f
 +}
 +#endif // VASKM
 +
-+void __init_km bhv_setup_sysfs_fileops_protection(struct kobject *fops,
++/***************************************************
++ * start
++ ***************************************************/
++void __init_km bhv_start_sysfs_fileops_protection(struct kobject *fops,
 +						  struct kobject *status)
 +{
 +	int i;
@@ -17251,12 +18260,13 @@ index 000000000..8e38fa02f
 +	BUG_ON(sysfs_create_files(fops, attr_array));
 +#endif // VASKM
 +}
++/***************************************************/
 diff --git security/bhv/sysfs_integrity_freeze.c security/bhv/sysfs_integrity_freeze.c
 new file mode 100644
-index 000000000..f8c915008
+index 000000000..ccf419c38
 --- /dev/null
 +++ security/bhv/sysfs_integrity_freeze.c
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,103 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -17344,7 +18354,10 @@ index 000000000..f8c915008
 +	return -EINVAL;
 +}
 +
-+void __init_km bhv_setup_sysfs_integrity_freeze(struct kobject *kobj)
++/***************************************************
++ * start
++ ***************************************************/
++void __init_km bhv_start_sysfs_integrity_freeze(struct kobject *kobj)
 +{
 +	int i;
 +	const struct attribute
@@ -17356,12 +18369,13 @@ index 000000000..f8c915008
 +
 +	BUG_ON(sysfs_create_files(kobj, attr_array));
 +}
++/***************************************************/
 diff --git security/bhv/sysfs_reg_protect.c security/bhv/sysfs_reg_protect.c
 new file mode 100644
-index 000000000..a100ff390
+index 000000000..3681b6ee7
 --- /dev/null
 +++ security/bhv/sysfs_reg_protect.c
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,130 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -17477,7 +18491,10 @@ index 000000000..a100ff390
 +	}
 +}
 +
-+void __init_km bhv_setup_sysfs_reg_protect(struct kobject *kobj)
++/***************************************************
++ * start
++ ***************************************************/
++void __init_km bhv_start_sysfs_reg_protect(struct kobject *kobj)
 +{
 +	int i;
 +	const struct attribute *attr_array[BHV_NUM_FREEZABLE_REGISTERS + 1];
@@ -17488,12 +18505,13 @@ index 000000000..a100ff390
 +
 +	BUG_ON(sysfs_create_files(kobj, attr_array));
 +}
++/***************************************************/
 diff --git security/bhv/sysfs_version.c security/bhv/sysfs_version.c
 new file mode 100644
-index 000000000..d2d3f7653
+index 000000000..f09e17ab0
 --- /dev/null
 +++ security/bhv/sysfs_version.c
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,110 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2023 - BedRock Systems Inc
@@ -17588,7 +18606,10 @@ index 000000000..d2d3f7653
 +}
 +#endif // VASKM
 +
-+void __init_km bhv_setup_sysfs_version(struct kobject *kobj)
++/***************************************************
++ * start
++ ***************************************************/
++void __init_km bhv_start_sysfs_version(struct kobject *kobj)
 +{
 +	int i;
 +	const struct attribute
@@ -17600,6 +18621,7 @@ index 000000000..d2d3f7653
 +
 +	BUG_ON(sysfs_create_files(kobj, attr_array));
 +}
++/***************************************************/
 diff --git security/bhv/vmalloc_to_page.c security/bhv/vmalloc_to_page.c
 new file mode 100644
 index 000000000..a83c30219
@@ -17691,6 +18713,101 @@ index 000000000..a83c30219
 +	return page;
 +}
 \ No newline at end of file
+diff --git security/integrity/digsig.c security/integrity/digsig.c
+index de442af7b..f141fc961 100644
+--- security/integrity/digsig.c
++++ security/integrity/digsig.c
+@@ -17,6 +17,8 @@
+ #include <crypto/public_key.h>
+ #include <keys/system_keyring.h>
+ 
++#include <bhv/keyring.h>
++
+ #include "integrity.h"
+ 
+ static struct key *keyring[INTEGRITY_KEYRING_MAX];
+@@ -44,6 +46,7 @@ static struct key *integrity_keyring_from_id(const unsigned int id)
+ 		return ERR_PTR(-EINVAL);
+ 
+ 	if (!keyring[id]) {
++		int rc = 0;
+ 		keyring[id] =
+ 			request_key(&key_type_keyring, keyring_name[id], NULL);
+ 		if (IS_ERR(keyring[id])) {
+@@ -52,6 +55,19 @@ static struct key *integrity_keyring_from_id(const unsigned int id)
+ 			keyring[id] = NULL;
+ 			return ERR_PTR(err);
+ 		}
++
++		/*
++		 * The keyring[INTEGRITY_KEYRING_PLATFORM] gets registered
++		 * directly in set_platform_trusted_keys.
++		 */
++		rc = bhv_keyring_register_system_trusted(&keyring[id]);
++		if (rc)
++			return ERR_PTR(rc);
++
++	} else {
++		int rc = bhv_keyring_verify(keyring[id], &keyring[id]);
++		if (rc)
++			return ERR_PTR(rc);
+ 	}
+ 
+ 	return keyring[id];
+@@ -109,6 +125,19 @@ static int __init __integrity_init_keyring(const unsigned int id,
+ 			keyring_name[id], err);
+ 		keyring[id] = NULL;
+ 	} else {
++		/*
++		 * The keyring[INTEGRITY_KEYRING_PLATFORM] gets also registered
++		 * in set_platform_trusted_keys to allow passing the keyring
++		 * directly and indirectly (through INTEGRITY_KEYRING_PLATFORM)
++		 * to verify_pkcs7_message_sig.
++		 */
++		err = bhv_keyring_register_system_trusted(&keyring[id]);
++		if (err) {
++			key_put(keyring[id]);
++			keyring[id] = NULL;
++			return err;
++		}
++
+ 		if (id == INTEGRITY_KEYRING_PLATFORM)
+ 			set_platform_trusted_keys(keyring[id]);
+ 	}
+@@ -156,6 +185,10 @@ int __init integrity_add_key(const unsigned int id, const void *data,
+ 	if (!keyring[id])
+ 		return -EINVAL;
+ 
++	rc = bhv_keyring_verify(keyring[id], &keyring[id]);
++	if (rc)
++		return rc;
++
+ 	key = key_create_or_update(make_key_ref(keyring[id], 1), "asymmetric",
+ 				   NULL, data, size, perm,
+ 				   KEY_ALLOC_NOT_IN_QUOTA);
+diff --git security/integrity/ima/ima_mok.c security/integrity/ima/ima_mok.c
+index 95cc31525..87c7d9703 100644
+--- security/integrity/ima/ima_mok.c
++++ security/integrity/ima/ima_mok.c
+@@ -15,6 +15,7 @@
+ #include <linux/slab.h>
+ #include <keys/system_keyring.h>
+ 
++#include <bhv/keyring.h>
+ 
+ struct key *ima_blacklist_keyring;
+ 
+@@ -44,6 +45,10 @@ static __init int ima_mok_init(void)
+ 
+ 	if (IS_ERR(ima_blacklist_keyring))
+ 		panic("Can't allocate IMA blacklist keyring.");
++	else
++		if (bhv_keyring_register_system_keyring(&ima_blacklist_keyring))
++			panic("Can't register IMA blacklist keyring.");
++
+ 	return 0;
+ }
+ device_initcall(ima_mok_init);
 diff --git security/security.c security/security.c
 index f9157d502..52ad9e519 100644
 --- security/security.c
